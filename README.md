@@ -6,7 +6,7 @@ macOS 13 이상에서 실행하는 2D 농구 슛 연습 앱입니다. Apple Sili
 
 ## 설치
 
-배포 릴리스와 Homebrew cask가 게시된 뒤 사용할 명령입니다.
+GitHub 릴리스와 Homebrew cask가 공개되어 있습니다.
 
 ```sh
 brew tap sonsy12/bk
