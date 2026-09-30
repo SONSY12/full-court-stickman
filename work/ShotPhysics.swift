@@ -1,5 +1,27 @@
 import Foundation
 
+enum ShotAssist {
+    // Half a keyboard direction step: forgiving aim, never a backward shot.
+    static let minimumAlignment = cos(Double.pi/8)
+    static func target(from origin:CGPoint,facing:CGPoint)->(index:Int,distance:CGFloat,end:CGPoint)? {
+        let length=CGFloat(hypot(Double(facing.x),Double(facing.y)))
+        guard length.isFinite && length>0 && origin.x.isFinite && origin.y.isFinite else { return nil }
+        var best:(index:Int,distance:CGFloat,end:CGPoint)?
+        var bestAlignment = -Double.infinity
+        for (index,hoop) in Hoop.all.enumerated() {
+            let dx=hoop.center.x-origin.x, dy=hoop.center.y-origin.y
+            let distance=CGFloat(hypot(Double(dx),Double(dy)))
+            guard distance>0.001 else { continue }
+            let alignment=Double((dx*facing.x+dy*facing.y)/(distance*length))
+            guard alignment>=minimumAlignment-1e-10 else { continue }
+            if alignment>bestAlignment+1e-10 || (abs(alignment-bestAlignment)<=1e-10 && distance<(best?.distance ?? .infinity)) {
+                best=(index,distance,hoop.center); bestAlignment=alignment
+            }
+        }
+        return best
+    }
+}
+
 /// A shot describes motion only. The rim crossing decides whether it scores.
 struct ShotFlight {
     var time: Double = 0
@@ -88,6 +110,22 @@ struct ShotFlight {
 
 /// Foundation-only checks, also callable by the app's internal test runner.
 func runShotPhysicsTests() {
+    for (index,hoop) in Hoop.all.enumerated() {
+        let sign:CGFloat=index == 0 ? -1 : 1
+        for angle:CGFloat in [-22.5,-22.49,-20,0,20,22.49,22.5] {
+            let a=angle * .pi/180
+            let origin=CGPoint(x:hoop.center.x-sign*700*cos(a),y:hoop.center.y-700*sin(a))
+            let aim=ShotAssist.target(from:origin,facing:CGPoint(x:sign,y:0))
+            precondition(aim?.index==index && abs(aim!.distance-700)<0.001,"Forward cone must select the basket")
+        }
+        for angle:CGFloat in [-23,-22.51,22.51,23,90,180] {
+            let a=angle * .pi/180
+            let origin=CGPoint(x:hoop.center.x-sign*170*cos(a),y:hoop.center.y-170*sin(a))
+            precondition(ShotAssist.target(from:origin,facing:CGPoint(x:sign,y:0))?.index != index,"No aim assist outside the forward cone")
+        }
+        precondition(ShotAssist.target(from:hoop.center,facing:CGPoint(x:sign,y:0))==nil,"Standing at an outward-facing hoop cannot divide by zero")
+    }
+    precondition(ShotAssist.target(from:.zero,facing:.zero)==nil,"Zero direction cannot aim")
     for (index, hoop) in Hoop.all.enumerated() {
         let direction: CGFloat = index == 0 ? -1 : 1
         for distance: CGFloat in [180, 550, 1250] {

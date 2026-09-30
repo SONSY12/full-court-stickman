@@ -224,17 +224,7 @@ final class CourtView: NSView {
     }
     func shotOrigin()->CGPoint { CGPoint(x:(carriedBall ?? heldPosition()).x,y:player.y) }
     func aimedHoop(from origin:CGPoint? = nil)->(index:Int,distance:CGFloat,end:CGPoint)? {
-        let origin=origin ?? shotOrigin(), direction=facing.vector
-        for (index,hoop) in Hoop.all.enumerated() {
-            let dx=hoop.center.x-origin.x, dy=hoop.center.y-origin.y
-            let along=dx*direction.x+dy*direction.y
-            guard along>0 else { continue }
-            let end=CGPoint(x:origin.x+direction.x*along,y:origin.y+direction.y*along)
-            let rx=Hoop.radiusX-Basketball.radius-3, ry=Hoop.radiusY-(Basketball.radius+3)/Hoop.groundDepthScale
-            let x=(end.x-hoop.center.x)/rx, y=(end.y-hoop.center.y)/ry
-            if x*x+y*y<1 { return (index,along,end) }
-        }
-        return nil
+        ShotAssist.target(from:origin ?? shotOrigin(),facing:facing.vector)
     }
     func updateGauge() {
         gaugeMarker=ShotGauge.marker(time:chargeTime)
@@ -247,9 +237,9 @@ final class CourtView: NSView {
         message="골! \(shotPointsByHoop[index])점 · 링 통과 확인"
     }
     func launchShot(from start: CGPoint) {
-        let direction=facing.vector
         let ground=CGPoint(x:start.x,y:player.y)
         let aim=aimedHoop(from:ground)
+        let direction=aim.map { CGPoint(x:($0.end.x-ground.x)/$0.distance,y:($0.end.y-ground.y)/$0.distance) } ?? facing.vector
         var range:CGFloat=aim?.distance ?? 620
         if aim != nil && !accurateShot && action != "dunk" {
             let error=CGFloat(abs(gaugeMarker-0.5))
@@ -397,7 +387,9 @@ final class CourtView: NSView {
         }
         NSGraphicsContext.restoreGraphicsState()
         if ownsBall {
-            let aim=aimedHoop(), direction=facing.vector
+            let aim=aimedHoop()
+            let origin=shotOrigin()
+            let direction=aim.map { CGPoint(x:($0.end.x-origin.x)/$0.distance,y:($0.end.y-origin.y)/$0.distance) } ?? facing.vector
             let color=aim != nil ? NSColor.systemGreen : NSColor.systemOrange
             color.setStroke()
             let arrow=NSBezierPath(); arrow.lineWidth=3
@@ -484,7 +476,8 @@ enum Main {
             view.player=CGPoint(x:980,y:530); view.facing = .right; view.ownsBall=true
             view.startCharge(); view.chargeTime=0.55; view.elapsed=0.55
             view.pose=CharacterPose.target(action:"charge",progress:0.55/2.16,airProgress:nil,walking:false,clock:0)
-            view.carriedBall=view.heldPosition(); view.updateGauge(); view.updateStatus="v0.3.0"
+            view.carriedBall=view.heldPosition(); view.updateGauge()
+            view.updateStatus="v\(Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "")"
             let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds)!
             view.cacheDisplay(in:view.bounds,to:bitmap)
             try! bitmap.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:CommandLine.arguments[flag+1]))
@@ -549,6 +542,25 @@ enum Main {
                 view.releaseCharge()
                 for _ in 0..<160 { view.tick() }
                 precondition(view.score>0 && view.score<=3,"Eight-direction green shot failed")
+            }
+            for (index,hoop) in Hoop.all.enumerated() {
+                let sign:CGFloat=index == 0 ? -1 : 1
+                for distance:CGFloat in [170,500,1000] {
+                    for angle:CGFloat in [-20,20] {
+                        let a=(distance>700 ? angle/2 : angle) * .pi/180
+                        let origin=CGPoint(x:hoop.center.x-sign*distance*cos(a),y:hoop.center.y-distance*sin(a))
+                        view.reset(); view.keys.removeAll(); view.player=origin
+                        view.facing=index == 0 ? .left : .right
+                        view.accurateShot=true; view.gaugeMarker=0.5
+                        view.launchShot(from:CGPoint(x:origin.x,y:origin.y-120))
+                        precondition(hypot(view.shotGroundEnd!.x-hoop.center.x,view.shotGroundEnd!.y-hoop.center.y)<0.001,"Assisted green shot must target ring center")
+                        let expected=view.shotPointsByHoop[index], fixedDirection=view.shotDirection, fixedEnd=view.shotGroundEnd!
+                        view.keys=[126]; view.tick(); view.keys.removeAll()
+                        precondition(view.shotDirection==fixedDirection && view.shotGroundEnd==fixedEnd,"Assist must not home after release")
+                        for _ in 0..<180 { view.tick() }
+                        precondition(view.score==expected,"Angled assist must physically score exactly once")
+                    }
+                }
             }
             view.reset(); view.keys.removeAll(); view.shotPointsByHoop=[3,3]
             view.rebound=LooseBall(ground:Hoop.all[0].center,velocity:.zero,height:260,verticalVelocity:-300)
@@ -623,10 +635,11 @@ enum Main {
             for facing in Facing.allCases {
                 view.reset(); view.player=CGPoint(x:836,y:600); view.facing=facing
                 view.launchShot(from:CGPoint(x:836,y:520))
-                let end=view.shotGroundEnd!, v=facing.vector
+                let end=view.shotGroundEnd!, v=view.shotDirection
                 let dx=end.x-836, dy=end.y-600
-                precondition(dx*v.x+dy*v.y>0,"Shot flies behind facing")
-                precondition(abs(dx*v.y-dy*v.x)<0.001,"Shot ignores facing")
+                precondition(Double(v.x*facing.vector.x+v.y*facing.vector.y)>=ShotAssist.minimumAlignment-0.0001,"Shot turns outside forward aim cone")
+                precondition(dx*v.x+dy*v.y>0,"Shot flies backward")
+                precondition(abs(dx*v.y-dy*v.x)<0.001,"Shot must follow its release direction")
                 view.keys=[123]; view.tick()
                 precondition(view.shotDirection==v,"Shot direction changed after release")
             }
