@@ -83,12 +83,14 @@ final class CourtView: NSView {
     var gaugeMarker:Double = 0
     var gaugeFeedback:Double = 0
     var accurateShot = false
-    var flight: (start: CGPoint, end: CGPoint, time: Double, made: Bool, points: Int)?
+    var flight: ShotFlight?
     var rebound: LooseBall?
+    var shotPointsByHoop = [2,2]
+    var goalBall: (body:LooseBall,time:Double)?
+    var takeoffFeet: [CGPoint]?
     var shotGroundStart: CGPoint? = nil
     var shotGroundEnd: CGPoint? = nil
     var shotDirection: CGPoint = .zero
-    var shotEndHeight: CGFloat = 225
     var timer: Timer?
     var message = "가운데 공에 가까이 가면 집습니다"
     var updateStatus = "업데이트 확인 중…"
@@ -132,15 +134,15 @@ final class CourtView: NSView {
         keys.insert(event.keyCode)
         if event.isARepeat { return }
         switch event.keyCode {
-        case 49: if action.isEmpty && airborne == nil { airborne=0; airDuration=jumpDuration; begin("jump") }
+        case 49: if action.isEmpty && airborne == nil { takeoffFeet=groundedFeet(); airborne=0; airDuration=jumpDuration; begin("jump") }
         case 7:
             if ownsBall && (action.isEmpty || action == "jump") {
                 startCharge()
             }
         case 6:
             if ownsBall && action.isEmpty {
-                if player.x > 1350 || player.x < 320 { airborne=0; airDuration=2.16; begin("dunk"); message = "덩크!" }
-                else { message = "덩크는 골대 가까이에서 가능합니다" }
+                if let aim=aimedHoop(), aim.distance<=220 { takeoffFeet=groundedFeet(); airborne=0; airDuration=2.16; begin("dunk"); message = "덩크!" }
+                else { message = "덩크는 가까운 골대를 바라볼 때 가능합니다" }
             }
         case 8:
             if airborne != nil && ["jump","block"].contains(action) {
@@ -157,17 +159,18 @@ final class CourtView: NSView {
     }
     func startCharge() {
         charging=true; chargeTime=0; gaugeMarker=0; accurateShot=false
-        begin("charge"); message="X를 놓아 초록 구간에 맞추세요"
+        begin("charge"); updateGauge(); message="X를 놓아 초록 구간에 맞추세요"
     }
     func releaseCharge() {
         guard charging && ownsBall else { return }
+        updateGauge()
         charging=false; accurateShot=abs(gaugeMarker-0.5)<=gaugeWidth/2
         gaugeFeedback=0.8
         begin(airborne != nil ? "jumpShot" : "shot")
         elapsed=duration(action)*0.4
         let start=carriedBall ?? heldPosition()
         ownsBall=false; launchShot(from:start)
-        message=accurateShot ? "초록 구간 성공!" : "타이밍 실패 · 리바운드를 준비하세요"
+        message=aimedHoop() == nil ? "조준 방향이 골대를 벗어났습니다" : accurateShot ? "초록 타이밍 · 링 통과를 확인 중입니다" : gaugeMarker<0.5 ? "너무 빠름 · 짧은 슛" : "너무 늦음 · 긴 슛"
     }
     func cancelCharge() {
         if charging { charging=false; action=""; elapsed=0 }
@@ -195,9 +198,11 @@ final class CourtView: NSView {
         player=CGPoint(x:550,y:530); ball=CGPoint(x:836,y:570)
         facing = .down
         ownsBall=false; action=""; actionDurationOverride=nil; airborne=nil; flight=nil; rebound=nil; score=0
+        airDuration=jumpDuration
         releaseTimeOverride=nil; carriedBall=nil
         charging=false; chargeTime=0; gaugeFeedback=0; accurateShot=false; elapsed=0
         shotGroundStart=nil; shotGroundEnd=nil
+        goalBall=nil; takeoffFeet=nil; shotPointsByHoop=[2,2]
         pose=CharacterPose.target(action:"",progress:0,airProgress:nil,walking:false,clock:clock)
         message="가운데 공에 가까이 가면 집습니다"
     }
@@ -211,55 +216,71 @@ final class CourtView: NSView {
         let t=air/airDuration
         return CGFloat(t > 0.2 && t < 0.8 ? 150*sin(.pi*(t-0.2)/0.6) : 0)*0.30
     }
+    func groundedFeet()->[CGPoint] {
+        [8,10].map {
+            let p=pose.joints[$0]
+            return CGPoint(x:player.x+(p.x-256)*0.3*facing.bodyWidth*facing.handSide,y:player.y)
+        }
+    }
+    func shotOrigin()->CGPoint { CGPoint(x:(carriedBall ?? heldPosition()).x,y:player.y) }
+    func aimedHoop(from origin:CGPoint? = nil)->(index:Int,distance:CGFloat,end:CGPoint)? {
+        let origin=origin ?? shotOrigin(), direction=facing.vector
+        for (index,hoop) in Hoop.all.enumerated() {
+            let dx=hoop.center.x-origin.x, dy=hoop.center.y-origin.y
+            let along=dx*direction.x+dy*direction.y
+            guard along>0 else { continue }
+            let end=CGPoint(x:origin.x+direction.x*along,y:origin.y+direction.y*along)
+            let rx=Hoop.radiusX-Basketball.radius-3, ry=Hoop.radiusY-(Basketball.radius+3)/Hoop.groundDepthScale
+            let x=(end.x-hoop.center.x)/rx, y=(end.y-hoop.center.y)/ry
+            if x*x+y*y<1 { return (index,along,end) }
+        }
+        return nil
+    }
+    func updateGauge() {
+        gaugeMarker=ShotGauge.marker(time:chargeTime)
+        let distance=aimedHoop()?.distance ?? Hoop.all.map { hypot(player.x-$0.center.x,player.y-$0.center.y) }.min()!
+        gaugeWidth=ShotGauge.width(distance:distance)
+    }
+    func awardGoal(_ index:Int,body:LooseBall) {
+        score += shotPointsByHoop[index]
+        goalBall=(body,0); flight=nil; rebound=nil
+        message="골! \(shotPointsByHoop[index])점 · 링 통과 확인"
+    }
     func launchShot(from start: CGPoint) {
         let direction=facing.vector
         let ground=CGPoint(x:start.x,y:player.y)
-        var range:CGFloat=620
-        var aimedDistance:CGFloat? = nil
-        for hoop in [CGPoint(x:130,y:530),CGPoint(x:1537,y:530)] {
-            let dx=hoop.x-ground.x, dy=hoop.y-ground.y
-            let along=dx*direction.x+dy*direction.y
-            let across=abs(dx*direction.y-dy*direction.x)
-            // Green timing remains valid beyond the former fixed shooting range.
-            if along>0 && across<65 {
-                range=along; aimedDistance=along; break
+        let aim=aimedHoop(from:ground)
+        var range:CGFloat=aim?.distance ?? 620
+        if aim != nil && !accurateShot && action != "dunk" {
+            let error=CGFloat(abs(gaugeMarker-0.5))
+            range += (gaugeMarker<0.5 ? -1 : 1)*max(65,range*error*0.5)
+            range=max(20,range)
+        }
+        if aim == nil {
+            var low:CGFloat=0, high=range
+            if !CourtBounds.contains(CGPoint(x:ground.x+direction.x*range,y:ground.y+direction.y*range)) {
+                for _ in 0..<30 {
+                    let mid=(low+high)/2
+                    if CourtBounds.contains(CGPoint(x:ground.x+direction.x*mid,y:ground.y+direction.y*mid)) { low=mid } else { high=mid }
+                }
+                range=low
             }
         }
-        func inside(_ distance:CGFloat)->Bool {
-            let x=ground.x+direction.x*distance, y=ground.y+direction.y*distance
-            return CourtBounds.contains(CGPoint(x:x,y:y))
-        }
-        if !inside(range) {
-            var low:CGFloat=0, high=range
-            for _ in 0..<30 { let middle=(low+high)/2; if inside(middle) { low=middle } else { high=middle } }
-            range=low
-        }
         let end=CGPoint(x:ground.x+direction.x*range,y:ground.y+direction.y*range)
-        let made:Bool
-        if let distance=aimedDistance, range>=distance-1 {
-            made=action == "dunk" || accurateShot
-        } else { made=false }
         shotGroundStart=ground; shotGroundEnd=end; shotDirection=direction
-        shotEndHeight=aimedDistance != nil ? 225 : 70
-        flight=(start,CGPoint(x:end.x,y:end.y-Basketball.radius-shotEndHeight),0,made,range>600 ? 3 : 2)
+        let feet=airborne != nil ? (takeoffFeet ?? groundedFeet()) : groundedFeet()
+        shotPointsByHoop=Hoop.all.indices.map { CourtGeometry.shotPoints(feet:feet,hoopIndex:$0) }
+        flight=ShotFlight(startGround:ground,startHeight:max(0,ground.y-Basketball.radius-start.y),endGround:end,distance:range,points:shotPointsByHoop[aim?.index ?? 0],targetHeight:aim != nil ? Hoop.height : 0)
     }
     func tick(dt: Double = 1/60) {
         clock += dt
         gaugeFeedback=max(0,gaugeFeedback-dt)
         if charging {
-            chargeTime += dt; gaugeMarker=ShotGauge.marker(time:chargeTime)
-            let direction=facing.vector
-            let ahead=Hoop.all.filter {
-                let dx=$0.center.x-player.x, dy=$0.center.y-player.y
-                return dx*direction.x+dy*direction.y>0 && abs(dx*direction.y-dy*direction.x)<65
-            }
-            // A far opposing basket must not use the nearby basket's wider window.
-            let distance=(ahead.isEmpty ? Hoop.all : ahead).map { hypot(player.x-$0.center.x,player.y-$0.center.y) }.min()!
-            gaugeWidth=ShotGauge.width(distance:distance)
+            chargeTime += dt
         }
         if let air=airborne {
             airborne=air+dt
-            if airborne! >= airDuration { airborne=nil }
+            if airborne! >= airDuration { airborne=nil; takeoffFeet=nil }
         }
         var dx: CGFloat=0, dy: CGFloat=0
         if keys.contains(123) { dx -= 1 }; if keys.contains(124) { dx += 1 }
@@ -276,49 +297,52 @@ final class CourtView: NSView {
             let previous=elapsed; elapsed += dt
             let release=releaseTimeOverride ?? duration(action)*(action == "shot" ? 0.4 : action == "dunk" ? 0.55 : 0.49)
             if ownsBall && ["shot","jumpShot","dunk"].contains(action) && previous < release && elapsed >= release {
-                ownsBall=false
-                let start=carriedBall ?? heldPosition()
-                launchShot(from:start)
+                if action == "dunk" && (aimedHoop()?.distance ?? CGFloat.infinity)>220 {
+                    begin("jump"); actionDurationOverride=max(0.05,airDuration-(airborne ?? 0))
+                    message="덩크 취소 · 골대에서 멀어져 공을 유지합니다"
+                } else {
+                    ownsBall=false
+                    let start=carriedBall ?? heldPosition()
+                    launchShot(from:start)
+                }
             }
             if action == "defense" && keys.contains(8) && elapsed > 0.55 && elapsed < 1.2 { elapsed=0.8 }
             if !charging && elapsed >= duration(action) { action=""; elapsed=0 }
         }
-        if var f=flight {
-            let oldTime=f.time
-            f.time += dt
-            let t=min(1,f.time/0.8)
-            let groundStart=shotGroundStart ?? CGPoint(x:f.start.x,y:530)
-            let groundEnd=shotGroundEnd ?? CGPoint(x:f.end.x,y:530)
-            let initialHeight=max(0,groundStart.y-Basketball.radius-f.start.y)
-            var collision:LooseBall? = nil
+        if var goal=goalBall {
+            goal.time += dt
+            ball=CGPoint(x:goal.body.screen.x,y:goal.body.screen.y+CGFloat(goal.time)*85)
+            if goal.time>=0.30 { goalBall=nil; ball=CGPoint(x:836,y:570); message="골! 공이 가운데로 돌아왔습니다" }
+            else { goalBall=goal }
+        } else if var f=flight {
+            let oldTime=f.time; f.time += dt
+            var previous=f.sample(at:oldTime)
+            var interrupted=false
             let steps=max(1,Int(ceil(dt*480)))
             for index in 1...steps {
-                let phase=min(1,(oldTime+dt*Double(index)/Double(steps))/0.8)
-                let ground=CGPoint(x:groundStart.x+(groundEnd.x-groundStart.x)*phase,y:groundStart.y+(groundEnd.y-groundStart.y)*phase)
-                let z=initialHeight*(1-phase)+shotEndHeight*phase+140*sin(.pi*phase)
-                let vz=(shotEndHeight-initialHeight+140 * .pi*cos(.pi*phase))/0.8
-                var body=LooseBall(ground:ground,velocity:CGPoint(x:(groundEnd.x-groundStart.x)/0.8,y:(groundEnd.y-groundStart.y)/0.8),height:z,verticalVelocity:vz)
-                if body.collideWithHoops() { collision=body; break }
-            }
-            let height=initialHeight*(1-t)+shotEndHeight*t+140*sin(.pi*t)
-            ball=CGPoint(x:groundStart.x+(groundEnd.x-groundStart.x)*t,
-                         y:groundStart.y+(groundEnd.y-groundStart.y)*t-Basketball.radius-height)
-            if let body=collision {
-                rebound=body; flight=nil; ball=body.screen
-                message=body.boardHits>0 ? "백보드에 맞고 튕겼습니다" : "림에 맞고 튕겼습니다"
-            } else if t>=1 {
-                flight=nil
-                if f.made {
-                    score += f.points; ball=CGPoint(x:836,y:570)
-                    message="골! 공이 가운데로 돌아왔습니다"
-                } else {
-                    rebound=LooseBall(ground:groundEnd,velocity:CGPoint(x:shotDirection.x*160,y:shotDirection.y*160),height:shotEndHeight)
-                    message="슛 실패 · 리바운드 공을 잡으세요"
+                var body=f.sample(at:min(f.duration,oldTime+dt*Double(index)/Double(steps)))
+                if body.collideWithHoops() {
+                    rebound=body; flight=nil; ball=body.screen; interrupted=true
+                    message=body.boardHits>0 ? "백보드에 맞고 튕겼습니다" : "림에 맞고 튕겼습니다"
+                    break
                 }
-            } else { flight=f }
+                if let hoop=ShotFlight.crossingHoop(from:previous,to:body) {
+                    awardGoal(hoop,body:body); ball=body.screen; interrupted=true; break
+                }
+                previous=body
+            }
+            if !interrupted {
+                ball=previous.screen
+                if f.time>=f.duration {
+                    rebound=previous; flight=nil; message="슛 실패 · 리바운드 공을 잡으세요"
+                } else {
+                    flight=f
+                }
+            }
         } else if var r=rebound {
             r.step(dt:dt); ball=r.screen
-            if r.height<35 && hypot(player.x-r.ground.x,player.y-r.ground.y)<60 && action.isEmpty {
+            if let hoop=r.scoredHoop { awardGoal(hoop,body:r) }
+            else if r.height<35 && hypot(player.x-r.ground.x,player.y-r.ground.y)<60 && action.isEmpty {
                 ownsBall=true; rebound=nil; message="리바운드 획득"
             } else { rebound=r }
         } else if !ownsBall && hypot(player.x-ball.x,player.y-ball.y)<70 && action.isEmpty {
@@ -338,6 +362,7 @@ final class CourtView: NSView {
                 carriedBall=current
             } else { carriedBall=target }
         } else { carriedBall=nil }
+        if charging { updateGauge() }
         needsDisplay=true
     }
     func heldPosition() -> CGPoint {
@@ -356,6 +381,38 @@ final class CourtView: NSView {
         transform.translateX(by:(bounds.width-world.width*scale)/2,yBy:(bounds.height-world.height*scale)/2)
         transform.scale(by:scale); transform.concat()
         court.draw(in:NSRect(x:0,y:0,width:1672,height:941),from:.zero,operation:.sourceOver,fraction:1,respectFlipped:true,hints:nil)
+        // The visible line and point classification use the same court geometry.
+        NSGraphicsContext.saveGraphicsState()
+        let courtClip=NSBezierPath()
+        courtClip.move(to:CGPoint(x:CourtBounds.inset(at:CourtBounds.top),y:CourtBounds.top))
+        courtClip.line(to:CGPoint(x:world.width-CourtBounds.inset(at:CourtBounds.top),y:CourtBounds.top))
+        courtClip.line(to:CGPoint(x:world.width-CourtBounds.inset(at:CourtBounds.bottom),y:CourtBounds.bottom))
+        courtClip.line(to:CGPoint(x:CourtBounds.inset(at:CourtBounds.bottom),y:CourtBounds.bottom)); courtClip.close(); courtClip.addClip()
+        NSColor(calibratedRed:1,green:0.82,blue:0.24,alpha:0.8).setStroke()
+        for left in [true,false] {
+            let points=CourtGeometry.threePointPolyline(left:left)
+            let path=NSBezierPath(); path.lineWidth=2
+            path.setLineDash([7,7],count:2,phase:0)
+            path.move(to:points[0]); for point in points.dropFirst() { path.line(to:point) }; path.stroke()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        if ownsBall {
+            let aim=aimedHoop(), direction=facing.vector
+            let color=aim != nil ? NSColor.systemGreen : NSColor.systemOrange
+            color.setStroke()
+            let arrow=NSBezierPath(); arrow.lineWidth=3
+            let tip=CGPoint(x:player.x+direction.x*65,y:player.y+direction.y*65)
+            arrow.move(to:player); arrow.line(to:tip)
+            arrow.move(to:CGPoint(x:tip.x-direction.x*12-direction.y*7,y:tip.y-direction.y*12+direction.x*7))
+            arrow.line(to:tip); arrow.line(to:CGPoint(x:tip.x-direction.x*12+direction.y*7,y:tip.y-direction.y*12-direction.x*7)); arrow.stroke()
+            if let aim {
+                let hoop=Hoop.all[aim.index]
+                let ring=NSBezierPath(ovalIn:NSRect(x:hoop.center.x-37,y:hoop.center.y-Basketball.radius-Hoop.height-15,width:74,height:30))
+                ring.lineWidth=3; ring.stroke()
+            }
+            let label=aim.map { "\($0.index == 0 ? "왼쪽" : "오른쪽") 골대 · \(CourtGeometry.shotPoints(feet:airborne != nil ? takeoffFeet ?? groundedFeet() : groundedFeet(),hoopIndex:$0.index))점" } ?? "골대를 향해 방향을 맞추세요"
+            label.draw(at:CGPoint(x:max(10,min(1400,player.x-85)),y:player.y+22),withAttributes:[.font:NSFont.systemFont(ofSize:16,weight:.semibold),.foregroundColor:color])
+        }
         NSColor.black.withAlphaComponent(0.2).setFill()
         NSBezierPath(ovalIn:NSRect(x:player.x-27,y:player.y-8,width:54,height:16)).fill()
         let s:CGFloat=0.30
@@ -373,10 +430,9 @@ final class CourtView: NSView {
         if !ownsBall {
             let ground:CGPoint
             if let r=rebound { ground=r.ground }
-            else if let f=flight, let start=shotGroundStart, let end=shotGroundEnd {
-                let t=min(1,f.time/0.8)
-                ground=CGPoint(x:start.x+(end.x-start.x)*t,y:start.y+(end.y-start.y)*t)
-            } else { ground=CGPoint(x:ball.x,y:ball.y+Basketball.radius) }
+            else if let goal=goalBall { ground=goal.body.ground }
+            else if let f=flight { ground=f.sample(at:f.time).ground }
+            else { ground=CGPoint(x:ball.x,y:ball.y+Basketball.radius) }
             NSColor.black.withAlphaComponent(0.18).setFill()
             NSBezierPath(ovalIn:NSRect(x:ground.x-10,y:ground.y-3,width:20,height:6)).fill()
         }
@@ -423,9 +479,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum Main {
     static func main() {
         let app=NSApplication.shared
+        if let flag=CommandLine.arguments.firstIndex(of:"--render-preview"),flag+1<CommandLine.arguments.count {
+            let view=CourtView(frame:NSRect(x:0,y:0,width:1672,height:1040)); view.timer?.invalidate()
+            view.player=CGPoint(x:980,y:530); view.facing = .right; view.ownsBall=true
+            view.startCharge(); view.chargeTime=0.55; view.elapsed=0.55
+            view.pose=CharacterPose.target(action:"charge",progress:0.55/2.16,airProgress:nil,walking:false,clock:0)
+            view.carriedBall=view.heldPosition(); view.updateGauge(); view.updateStatus="v0.3.0"
+            let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds)!
+            view.cacheDisplay(in:view.bounds,to:bitmap)
+            try! bitmap.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:CommandLine.arguments[flag+1]))
+            return
+        }
         if CommandLine.arguments.contains("--self-test") {
             let view=CourtView(frame:NSRect(x:0,y:0,width:1200,height:747))
             view.timer?.invalidate()
+            runShotPhysicsTests(); runCourtGeometryTests()
             precondition(abs(ShotGauge.width(distance:200)-0.32)<0.0001)
             precondition(abs(ShotGauge.width(distance:450)-0.16)<0.0001)
             precondition(abs(ShotGauge.width(distance:650)-0.06)<0.0001)
@@ -435,7 +503,7 @@ enum Main {
             precondition(view.accurateShot && !view.ownsBall && view.flight != nil)
             view.reset()
             view.ownsBall=true; view.startCharge(); view.tick(dt:0.1); view.releaseCharge()
-            precondition(!view.accurateShot && view.flight?.made == false,"Early release must miss")
+            precondition(!view.accurateShot && view.flight != nil,"Early release must miss")
             view.reset(); view.ownsBall=true; view.startCharge(); view.cancelCharge()
             precondition(!view.charging && view.ownsBall && view.flight == nil,"Focus loss must cancel, not shoot")
             view.reset()
@@ -451,13 +519,52 @@ enum Main {
                         view.ownsBall=true; view.startCharge()
                         view.tick(dt:green ? 0.55 : 0.1); view.releaseCharge()
                         precondition(abs(view.gaugeWidth-0.06)<0.0001,"Wrong basket used for long-range gauge")
-                        precondition(view.flight?.made == green,"Long-range green release rejected")
-                        precondition(abs(view.shotGroundEnd!.x-hoopX)<0.001,"Long shot stops short of hoop")
-                        for _ in 0..<60 { view.tick() }
+                        precondition(view.flight != nil && view.score==0,"Score must wait for a downward crossing")
+                        if green { precondition(abs(view.shotGroundEnd!.x-hoopX)<0.001,"Long shot stops short of hoop") }
+                        for _ in 0..<160 { view.tick() }
                         precondition(green ? view.score==3 : view.score==0,"Long shot scoring/collision regression")
                     }
                 }
             }
+            for dt in [1.0/60,1.0/120,0.05] {
+                for hoop in Hoop.all {
+                    for offset:CGFloat in [-8,0,8] {
+                        view.reset(); view.keys.removeAll()
+                        view.player=CGPoint(x:836,y:hoop.center.y+offset)
+                        view.facing=hoop.center.x<836 ? .left : .right
+                        view.accurateShot=true
+                        precondition(view.aimedHoop() != nil,"Walking-sized offsets must be aimable")
+                        view.launchShot(from:CGPoint(x:836,y:view.player.y-120))
+                        for _ in 0..<Int(4/dt) { view.tick(dt:dt) }
+                        precondition(view.score==3,"Green aim must score once at every frame rate")
+                    }
+                }
+            }
+            for facing in Facing.allCases {
+                view.reset(); view.keys.removeAll(); view.facing=facing
+                let hoop=Hoop.all[facing.vector.x<0 ? 0 : 1]
+                view.player=CGPoint(x:hoop.center.x-facing.vector.x*170,y:hoop.center.y-facing.vector.y*170)
+                view.ownsBall=true; view.startCharge(); view.tick(dt:0.55)
+                precondition(view.aimedHoop() != nil,"All eight shot directions must support aiming")
+                view.releaseCharge()
+                for _ in 0..<160 { view.tick() }
+                precondition(view.score>0 && view.score<=3,"Eight-direction green shot failed")
+            }
+            view.reset(); view.keys.removeAll(); view.shotPointsByHoop=[3,3]
+            view.rebound=LooseBall(ground:Hoop.all[0].center,velocity:.zero,height:260,verticalVelocity:-300)
+            for _ in 0..<180 { view.tick() }
+            precondition(view.score==3 && view.ball.x==836,"A descending rebound scores once and resets")
+            view.reset(); view.player=CGPoint(x:650,y:530); view.facing = .left
+            view.takeoffFeet=view.groundedFeet(); view.airborne=0.4; view.player.x=450
+            view.accurateShot=true; view.launchShot(from:CGPoint(x:450,y:350))
+            precondition(view.shotPointsByHoop[0]==3,"Jump shots must use takeoff feet")
+            view.reset(); view.player=CGPoint(x:450,y:530); view.facing = .left
+            view.accurateShot=true; view.launchShot(from:CGPoint(x:450,y:350))
+            precondition(view.shotPointsByHoop[0]==2,"Ground shots must use current feet")
+            view.reset(); view.ownsBall=true; view.facing = .right
+            view.airborne=1.18; view.airDuration=2.16; view.begin("dunk"); view.elapsed=1.18
+            view.player=CGPoint(x:800,y:530); view.tick(dt:0.02)
+            precondition(view.ownsBall && view.flight == nil && view.action == "jump","A dunk leaving range must keep the ball")
             view.reset()
             precondition(view.court != nil && view.clips.count == 8 && view.heads.count == 4,"Missing assets")
             for dx:CGFloat in [-1,0,1] {
@@ -503,12 +610,16 @@ enum Main {
             view.action="jump"; view.elapsed=0.45; view.airborne=0.45
             for _ in 0..<28 { view.tick() }
             precondition(view.airborne==nil && view.action.isEmpty,"Fast landing failed")
-            view.reset(); view.flight=(CGPoint(x:1300,y:300),CGPoint(x:1537,y:305),0.79,false,2)
-            view.tick(); precondition(view.score==0 && view.rebound != nil,"Miss must rebound")
+            view.reset(); view.player=CGPoint(x:1000,y:530); view.facing = .right; view.gaugeMarker=0.1
+            view.launchShot(from:CGPoint(x:1000,y:300))
+            for _ in 0..<160 { view.tick() }
+            precondition(view.score==0 && view.rebound != nil,"Miss must rebound")
             for _ in 0..<70 { view.tick() }
             precondition(view.ball.x != 836,"Miss must not reset to center")
-            view.reset(); view.flight=(CGPoint(x:1300,y:300),CGPoint(x:1537,y:305),0.79,true,2)
-            view.tick(); precondition(view.score==2 && view.ball.x==836,"Score reset failed")
+            view.reset(); view.player=CGPoint(x:1300,y:530); view.facing = .right; view.accurateShot=true
+            view.launchShot(from:CGPoint(x:1300,y:300))
+            for _ in 0..<160 { view.tick() }
+            precondition(view.score==2 && view.ball.x==836,"Physical score reset failed")
             for facing in Facing.allCases {
                 view.reset(); view.player=CGPoint(x:836,y:600); view.facing=facing
                 view.launchShot(from:CGPoint(x:836,y:520))
@@ -573,7 +684,7 @@ enum Main {
                     }
                 }
             }
-            print("PASS: shot gauge widths/hold/release/cancel, foot-based court bounds, enlarged ball collisions/bounces, motion")
+            print("PASS: physical hoop scoring/no duplicates, near/far and 60/120Hz, release/takeoff feet 2/3 points, aiming, rebounds, gauge and motion")
             return
         }
         app.setActivationPolicy(.regular)
