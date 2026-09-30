@@ -220,7 +220,8 @@ final class CourtView: NSView {
             let dx=hoop.x-ground.x, dy=hoop.y-ground.y
             let along=dx*direction.x+dy*direction.y
             let across=abs(dx*direction.y-dy*direction.x)
-            if along>0 && along<=620 && across<65 {
+            // Green timing remains valid beyond the former fixed shooting range.
+            if along>0 && across<65 {
                 range=along; aimedDistance=along; break
             }
         }
@@ -247,7 +248,13 @@ final class CourtView: NSView {
         gaugeFeedback=max(0,gaugeFeedback-dt)
         if charging {
             chargeTime += dt; gaugeMarker=ShotGauge.marker(time:chargeTime)
-            let distance=Hoop.all.map { hypot(player.x-$0.center.x,player.y-$0.center.y) }.min()!
+            let direction=facing.vector
+            let ahead=Hoop.all.filter {
+                let dx=$0.center.x-player.x, dy=$0.center.y-player.y
+                return dx*direction.x+dy*direction.y>0 && abs(dx*direction.y-dy*direction.x)<65
+            }
+            // A far opposing basket must not use the nearby basket's wider window.
+            let distance=(ahead.isEmpty ? Hoop.all : ahead).map { hypot(player.x-$0.center.x,player.y-$0.center.y) }.min()!
             gaugeWidth=ShotGauge.width(distance:distance)
         }
         if let air=airborne {
@@ -435,6 +442,23 @@ enum Main {
             for distance in stride(from:201,through:700,by:1) {
                 precondition(ShotGauge.width(distance:CGFloat(distance))<=ShotGauge.width(distance:CGFloat(distance-1)),"Green window must only narrow")
             }
+            for facing:Facing in [.left,.right] {
+                for distance:CGFloat in [700,1000,1300] {
+                    for green in [false,true] {
+                        view.reset(); view.facing=facing
+                        let hoopX:CGFloat=facing == .left ? 130 : 1537
+                        view.player=CGPoint(x:hoopX-facing.vector.x*distance,y:530)
+                        view.ownsBall=true; view.startCharge()
+                        view.tick(dt:green ? 0.55 : 0.1); view.releaseCharge()
+                        precondition(abs(view.gaugeWidth-0.06)<0.0001,"Wrong basket used for long-range gauge")
+                        precondition(view.flight?.made == green,"Long-range green release rejected")
+                        precondition(abs(view.shotGroundEnd!.x-hoopX)<0.001,"Long shot stops short of hoop")
+                        for _ in 0..<60 { view.tick() }
+                        precondition(green ? view.score==3 : view.score==0,"Long shot scoring/collision regression")
+                    }
+                }
+            }
+            view.reset()
             precondition(view.court != nil && view.clips.count == 8 && view.heads.count == 4,"Missing assets")
             for dx:CGFloat in [-1,0,1] {
                 for dy:CGFloat in [-1,0,1] where dx != 0 || dy != 0 {
