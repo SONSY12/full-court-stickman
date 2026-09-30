@@ -16,3 +16,11 @@ outputs/character-shoot-sheet-v1.png
 outputs/character-dribble-sheet-v1.png
 outputs/character-walk-dribble-sheet-v1.png
 work/*.py
+work/__pycache__/
+outputs/body-v2/*preview*
+outputs/body-v2/*peak*
+outputs/body-v2/*check*
+outputs/body-v2/*hold*
+outputs/body-v2/*release*
+outputs/body-v2/character-dribble-sheet-v1.png
+outputs/body-v2/character-walk-dribble-sheet-v1.png
