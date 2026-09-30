@@ -1,5 +1,17 @@
 import AppKit
 
+enum ShotGauge {
+    static func width(distance:CGFloat)->Double {
+        if distance<=200 { return 0.32 }
+        if distance<=450 { return 0.32-Double((distance-200)/250)*0.16 }
+        return max(0.06,0.16-Double((distance-450)/200)*0.10)
+    }
+    static func marker(time:Double)->Double {
+        let phase=time.truncatingRemainder(dividingBy:2.2)/1.1
+        return phase<=1 ? phase : 2-phase
+    }
+}
+
 struct Clip {
     var frames: [NSImage]
     var width: CGFloat
@@ -65,6 +77,12 @@ final class CourtView: NSView {
     var lastTick = ProcessInfo.processInfo.systemUptime
     var clock: Double = 0
     var score = 0
+    var charging = false
+    var chargeTime:Double = 0
+    var gaugeWidth:Double = 0.32
+    var gaugeMarker:Double = 0
+    var gaugeFeedback:Double = 0
+    var accurateShot = false
     var flight: (start: CGPoint, end: CGPoint, time: Double, made: Bool, points: Int)?
     var rebound: LooseBall?
     var shotGroundStart: CGPoint? = nil
@@ -117,8 +135,7 @@ final class CourtView: NSView {
         case 49: if action.isEmpty && airborne == nil { airborne=0; airDuration=jumpDuration; begin("jump") }
         case 7:
             if ownsBall && (action.isEmpty || action == "jump") {
-                begin(airborne != nil ? "jumpShot" : "shot")
-                message = "슛!"
+                startCharge()
             }
         case 6:
             if ownsBall && action.isEmpty {
@@ -134,11 +151,31 @@ final class CourtView: NSView {
         default: break
         }
     }
-    override func keyUp(with event: NSEvent) { keys.remove(event.keyCode) }
+    override func keyUp(with event: NSEvent) {
+        keys.remove(event.keyCode)
+        if event.keyCode == 7 && charging { releaseCharge() }
+    }
+    func startCharge() {
+        charging=true; chargeTime=0; gaugeMarker=0; accurateShot=false
+        begin("charge"); message="X를 놓아 초록 구간에 맞추세요"
+    }
+    func releaseCharge() {
+        guard charging && ownsBall else { return }
+        charging=false; accurateShot=abs(gaugeMarker-0.5)<=gaugeWidth/2
+        gaugeFeedback=0.8
+        begin(airborne != nil ? "jumpShot" : "shot")
+        elapsed=duration(action)*0.4
+        let start=carriedBall ?? heldPosition()
+        ownsBall=false; launchShot(from:start)
+        message=accurateShot ? "초록 구간 성공!" : "타이밍 실패 · 리바운드를 준비하세요"
+    }
+    func cancelCharge() {
+        if charging { charging=false; action=""; elapsed=0 }
+    }
     override func flagsChanged(with event: NSEvent) {
         running = event.modifierFlags.contains(.shift)
     }
-    override func resignFirstResponder() -> Bool { keys.removeAll(); running=false; return true }
+    override func resignFirstResponder() -> Bool { clearInput(); return true }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self,name:NSWindow.didResignKeyNotification,object:nil)
@@ -146,7 +183,7 @@ final class CourtView: NSView {
             NotificationCenter.default.addObserver(self,selector:#selector(clearInput),name:NSWindow.didResignKeyNotification,object:window)
         }
     }
-    @objc private func clearInput() { keys.removeAll(); running=false }
+    @objc private func clearInput() { keys.removeAll(); running=false; cancelCharge() }
     func begin(_ name: String) {
         action=name; elapsed=0; actionDurationOverride=nil; releaseTimeOverride=nil
         if ["jumpShot","block"].contains(name), let air=airborne {
@@ -159,6 +196,7 @@ final class CourtView: NSView {
         facing = .down
         ownsBall=false; action=""; actionDurationOverride=nil; airborne=nil; flight=nil; rebound=nil; score=0
         releaseTimeOverride=nil; carriedBall=nil
+        charging=false; chargeTime=0; gaugeFeedback=0; accurateShot=false; elapsed=0
         shotGroundStart=nil; shotGroundEnd=nil
         pose=CharacterPose.target(action:"",progress:0,airProgress:nil,walking:false,clock:clock)
         message="가운데 공에 가까이 가면 집습니다"
@@ -188,8 +226,7 @@ final class CourtView: NSView {
         }
         func inside(_ distance:CGFloat)->Bool {
             let x=ground.x+direction.x*distance, y=ground.y+direction.y*distance
-            let inset=297-y*0.30
-            return y>=390 && y<=855 && x>=inset && x<=1672-inset
+            return CourtBounds.contains(CGPoint(x:x,y:y))
         }
         if !inside(range) {
             var low:CGFloat=0, high=range
@@ -199,14 +236,20 @@ final class CourtView: NSView {
         let end=CGPoint(x:ground.x+direction.x*range,y:ground.y+direction.y*range)
         let made:Bool
         if let distance=aimedDistance, range>=distance-1 {
-            made=action == "dunk" || Double.random(in:0...1)<max(0.25,0.95-Double(distance)/1300)
+            made=action == "dunk" || accurateShot
         } else { made=false }
         shotGroundStart=ground; shotGroundEnd=end; shotDirection=direction
         shotEndHeight=aimedDistance != nil ? 225 : 70
-        flight=(start,CGPoint(x:end.x,y:end.y-8-shotEndHeight),0,made,range>600 ? 3 : 2)
+        flight=(start,CGPoint(x:end.x,y:end.y-Basketball.radius-shotEndHeight),0,made,range>600 ? 3 : 2)
     }
     func tick(dt: Double = 1/60) {
         clock += dt
+        gaugeFeedback=max(0,gaugeFeedback-dt)
+        if charging {
+            chargeTime += dt; gaugeMarker=ShotGauge.marker(time:chargeTime)
+            let distance=Hoop.all.map { hypot(player.x-$0.center.x,player.y-$0.center.y) }.min()!
+            gaugeWidth=ShotGauge.width(distance:distance)
+        }
         if let air=airborne {
             airborne=air+dt
             if airborne! >= airDuration { airborne=nil }
@@ -219,8 +262,8 @@ final class CourtView: NSView {
             let length=sqrt(dx*dx+dy*dy)
             player.x += dx/length*movementSpeed*CGFloat(dt*60); player.y += dy/length*movementSpeed*CGFloat(dt*60)
         }
-        player.y=max(390,min(855,player.y))
-        let inset=180-(player.y-390)*0.30
+        player.y=max(CourtBounds.top,min(CourtBounds.bottom,player.y))
+        let inset=CourtBounds.inset(at:player.y)
         player.x=max(inset,min(world.width-inset,player.x))
         if !action.isEmpty {
             let previous=elapsed; elapsed += dt
@@ -231,7 +274,7 @@ final class CourtView: NSView {
                 launchShot(from:start)
             }
             if action == "defense" && keys.contains(8) && elapsed > 0.55 && elapsed < 1.2 { elapsed=0.8 }
-            if elapsed >= duration(action) { action=""; elapsed=0 }
+            if !charging && elapsed >= duration(action) { action=""; elapsed=0 }
         }
         if var f=flight {
             let oldTime=f.time
@@ -239,7 +282,7 @@ final class CourtView: NSView {
             let t=min(1,f.time/0.8)
             let groundStart=shotGroundStart ?? CGPoint(x:f.start.x,y:530)
             let groundEnd=shotGroundEnd ?? CGPoint(x:f.end.x,y:530)
-            let initialHeight=max(0,groundStart.y-8-f.start.y)
+            let initialHeight=max(0,groundStart.y-Basketball.radius-f.start.y)
             var collision:LooseBall? = nil
             let steps=max(1,Int(ceil(dt*480)))
             for index in 1...steps {
@@ -252,7 +295,7 @@ final class CourtView: NSView {
             }
             let height=initialHeight*(1-t)+shotEndHeight*t+140*sin(.pi*t)
             ball=CGPoint(x:groundStart.x+(groundEnd.x-groundStart.x)*t,
-                         y:groundStart.y+(groundEnd.y-groundStart.y)*t-8-height)
+                         y:groundStart.y+(groundEnd.y-groundStart.y)*t-Basketball.radius-height)
             if let body=collision {
                 rebound=body; flight=nil; ball=body.screen
                 message=body.boardHits>0 ? "백보드에 맞고 튕겼습니다" : "림에 맞고 튕겼습니다"
@@ -276,6 +319,10 @@ final class CourtView: NSView {
         }
         let target=CharacterPose.target(action:action,progress:elapsed/duration(action),airProgress:airborne.map { $0/airDuration },walking:dx != 0 || dy != 0,clock:clock)
         pose.approach(target,dt:dt)
+        // Navigation uses grounded feet, never the head or airborne sprite height.
+        let footOffsets=[8,10].map { (pose.joints[$0].x-256)*0.3*facing.bodyWidth*facing.handSide }
+        player.x=max(CourtBounds.inset(at:player.y)-footOffsets.min()!,
+                     min(world.width-CourtBounds.inset(at:player.y)-footOffsets.max()!,player.x))
         if ownsBall {
             let target=heldPosition()
             if var current=carriedBall {
@@ -293,7 +340,7 @@ final class CourtView: NSView {
                            y:player.y+(hand.y-691-24)*0.3-jumpHeight())
         }
         let bounce=action.isEmpty ? CGFloat(abs(sin(clock*5.2)))*65 : 65
-        return CGPoint(x:player.x+31*facing.bodyWidth*facing.handSide,y:player.y-8-bounce-jumpHeight())
+        return CGPoint(x:player.x+31*facing.bodyWidth*facing.handSide,y:player.y-Basketball.radius-bounce-jumpHeight())
     }
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.setFill(); bounds.fill()
@@ -322,18 +369,28 @@ final class CourtView: NSView {
             else if let f=flight, let start=shotGroundStart, let end=shotGroundEnd {
                 let t=min(1,f.time/0.8)
                 ground=CGPoint(x:start.x+(end.x-start.x)*t,y:start.y+(end.y-start.y)*t)
-            } else { ground=CGPoint(x:ball.x,y:ball.y+8) }
+            } else { ground=CGPoint(x:ball.x,y:ball.y+Basketball.radius) }
             NSColor.black.withAlphaComponent(0.18).setFill()
             NSBezierPath(ovalIn:NSRect(x:ground.x-10,y:ground.y-3,width:20,height:6)).fill()
         }
         let b=ownsBall ? (carriedBall ?? heldPosition()) : ball
         NSColor(calibratedRed:0.95,green:0.49,blue:0.12,alpha:1).setFill()
-        let circle=NSBezierPath(ovalIn:NSRect(x:b.x-8,y:b.y-8,width:16,height:16)); circle.fill()
+        let radius=Basketball.radius
+        let circle=NSBezierPath(ovalIn:NSRect(x:b.x-radius,y:b.y-radius,width:radius*2,height:radius*2)); circle.fill()
         NSColor.black.setStroke(); circle.lineWidth=1.5; circle.stroke()
-        let seam=NSBezierPath(); seam.move(to:NSPoint(x:b.x-8,y:b.y)); seam.line(to:NSPoint(x:b.x+8,y:b.y)); seam.stroke()
+        let seam=NSBezierPath(); seam.move(to:NSPoint(x:b.x-radius,y:b.y)); seam.line(to:NSPoint(x:b.x+radius,y:b.y)); seam.stroke()
+        if charging || gaugeFeedback>0 {
+            let rect=NSRect(x:max(12,min(world.width-262,player.x-125)),y:max(18,player.y-250-jumpHeight()),width:250,height:16)
+            NSColor.black.setFill(); rect.insetBy(dx:-3,dy:-3).fill()
+            NSGradient(colors:[.red,.orange,.yellow,.orange,.red])!.draw(in:rect,angle:0)
+            NSColor.systemGreen.setFill()
+            NSRect(x:rect.midX-rect.width*gaugeWidth/2,y:rect.minY,width:rect.width*gaugeWidth,height:rect.height).fill()
+            NSColor.white.setFill()
+            NSRect(x:rect.minX+rect.width*gaugeMarker-1.5,y:rect.minY-3,width:3,height:22).fill()
+        }
         NSColor(calibratedWhite:0.10,alpha:1).setFill(); NSRect(x:0,y:941,width:1672,height:99).fill()
         let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:24,weight:.medium),.foregroundColor:NSColor.white]
-        "방향키 이동   Shift 달리기   Space 점프   X 슛   Z 덩크   C 수비 / 블로킹   R 초기화".draw(at:NSPoint(x:45,y:960),withAttributes:attrs)
+        "방향키 이동   Shift 달리기   Space 점프   X 누르고 놓기: 슛   Z 덩크   C 수비 / 블로킹   R 초기화".draw(at:NSPoint(x:45,y:960),withAttributes:attrs)
         "\(score)점 · \(message) · \(updateStatus)".draw(at:NSPoint(x:45,y:1000),withAttributes:[.font:NSFont.systemFont(ofSize:18),.foregroundColor:NSColor.lightGray])
     }
 }
@@ -362,6 +419,22 @@ enum Main {
         if CommandLine.arguments.contains("--self-test") {
             let view=CourtView(frame:NSRect(x:0,y:0,width:1200,height:747))
             view.timer?.invalidate()
+            precondition(abs(ShotGauge.width(distance:200)-0.32)<0.0001)
+            precondition(abs(ShotGauge.width(distance:450)-0.16)<0.0001)
+            precondition(abs(ShotGauge.width(distance:650)-0.06)<0.0001)
+            view.ownsBall=true; view.startCharge(); view.tick(dt:0.55)
+            precondition(view.charging && view.ownsBall && view.flight == nil)
+            view.releaseCharge()
+            precondition(view.accurateShot && !view.ownsBall && view.flight != nil)
+            view.reset()
+            view.ownsBall=true; view.startCharge(); view.tick(dt:0.1); view.releaseCharge()
+            precondition(!view.accurateShot && view.flight?.made == false,"Early release must miss")
+            view.reset(); view.ownsBall=true; view.startCharge(); view.cancelCharge()
+            precondition(!view.charging && view.ownsBall && view.flight == nil,"Focus loss must cancel, not shoot")
+            view.reset()
+            for distance in stride(from:201,through:700,by:1) {
+                precondition(ShotGauge.width(distance:CGFloat(distance))<=ShotGauge.width(distance:CGFloat(distance-1)),"Green window must only narrow")
+            }
             precondition(view.court != nil && view.clips.count == 8 && view.heads.count == 4,"Missing assets")
             for dx:CGFloat in [-1,0,1] {
                 for dy:CGFloat in [-1,0,1] where dx != 0 || dy != 0 {
@@ -376,6 +449,20 @@ enum Main {
                 }
             }
             view.reset()
+            view.keys=[126]
+            for _ in 0..<200 { view.tick() }
+            precondition(view.player.y==CourtBounds.top && view.player.y<390,"Upper court is still blocked")
+            view.keys=[124,126]
+            for _ in 0..<500 { view.tick() }
+            precondition(CourtBounds.contains(view.player),"Player left upper corner")
+            for foot in [8,10] {
+                let x=view.player.x+(view.pose.joints[foot].x-256)*0.3*view.facing.bodyWidth*view.facing.handSide
+                precondition(CourtBounds.contains(CGPoint(x:x,y:view.player.y)),"Grounded feet must stay inside court")
+            }
+            var upperBall=LooseBall(ground:CGPoint(x:836,y:300),velocity:CGPoint(x:0,y:-400),height:0,verticalVelocity:0)
+            upperBall.step(dt:0.25)
+            precondition(upperBall.ground.y>=CourtBounds.top && upperBall.velocity.y>0,"Ball upper boundary mismatch")
+            view.keys.removeAll(); view.reset()
             for fast in [false,true] {
                 view.running=fast; view.player=CGPoint(x:836,y:600)
                 view.keys=[124,125]; view.tick()
@@ -462,7 +549,7 @@ enum Main {
                     }
                 }
             }
-            print("PASS: both rims/boards, high-speed contacts, clear center and overhead misses; unchanged scoring, shot direction, floor bounces and motion")
+            print("PASS: shot gauge widths/hold/release/cancel, foot-based court bounds, enlarged ball collisions/bounces, motion")
             return
         }
         app.setActivationPolicy(.regular)

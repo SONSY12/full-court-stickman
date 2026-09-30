@@ -18,6 +18,7 @@ struct CharacterPose {
         let recovery=smooth((t-0.64)/0.3)
         var lift:CGFloat=0
         if ["shot","jumpShot"].contains(action) { lift=smooth(t/0.32)*(1-recovery) }
+        if action == "charge" { lift=smooth(t/0.32) }
         if action == "block" { lift=smooth(t/0.24)*(1-smooth((t-0.68)/0.28)) }
         if action == "dunk" { lift=smooth((t-0.12)/0.22)*(1-smooth((t-0.66)/0.25)) }
         let defense=action == "defense" ? smooth(t/0.2)*(1-smooth((t-0.72)/0.22)) : 0

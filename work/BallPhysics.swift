@@ -1,5 +1,20 @@
 import Foundation
 
+enum Basketball { static let radius:CGFloat = 11 }
+
+enum CourtBounds {
+    // Ground coordinates follow the white trapezoid in the court background.
+    static let top:CGFloat = 253
+    static let bottom:CGFloat = 781
+    static func inset(at y:CGFloat)->CGFloat {
+        let t=max(0,min(1,(y-top)/(bottom-top)))
+        return 180*(1-t)
+    }
+    static func contains(_ p:CGPoint)->Bool {
+        p.y>=top && p.y<=bottom && p.x>=inset(at:p.y) && p.x<=1672-inset(at:p.y)
+    }
+}
+
 struct Hoop {
     var center: CGPoint
     var boardX: CGFloat
@@ -33,7 +48,7 @@ struct LooseBall {
     var rimHits = 0
     var boardHits = 0
     var settled: Bool { height==0 && verticalVelocity==0 && hypot(velocity.x,velocity.y)<8 }
-    var screen: CGPoint { CGPoint(x:ground.x,y:ground.y-8-height) }
+    var screen: CGPoint { CGPoint(x:ground.x,y:ground.y-Basketball.radius-height) }
 
     mutating func contact(x:CGFloat,y:CGFloat,z:CGFloat,radius:CGFloat,restitution:CGFloat) -> Bool {
         let dx=ground.x-x,dy=ground.y-y,dz=height-z
@@ -70,10 +85,10 @@ struct LooseBall {
                     if verticalVelocity<65 { verticalVelocity=0 }
                 }
             }
-            if ground.y<390 { ground.y=390; velocity.y=abs(velocity.y)*0.6 }
-            if ground.y>855 { ground.y=855; velocity.y = -abs(velocity.y)*0.6 }
+            if ground.y<CourtBounds.top { ground.y=CourtBounds.top; velocity.y=abs(velocity.y)*0.6 }
+            if ground.y>CourtBounds.bottom { ground.y=CourtBounds.bottom; velocity.y = -abs(velocity.y)*0.6 }
             // Elevated balls can reach baskets that overhang the court boundary.
-            let inset:CGFloat=height>145 ? 45 : 180-(ground.y-390)*0.30
+            let inset:CGFloat=height>145 ? 45 : CourtBounds.inset(at:ground.y)
             if ground.x<inset { ground.x=inset; velocity.x=abs(velocity.x)*0.6 }
             if ground.x>1672-inset { ground.x=1672-inset; velocity.x = -abs(velocity.x)*0.6 }
             let friction=exp(-(height==0 ? 4.0 : 0.7)*delta)
@@ -87,9 +102,9 @@ struct LooseBall {
         for hoop in Hoop.all {
             let y=max(hoop.center.y-55,min(hoop.center.y+55,ground.y))
             let z=max(156,min(336,height))
-            if contact(x:hoop.boardX,y:y,z:z,radius:9,restitution:0.72) { boardHits += 1 }
+            if contact(x:hoop.boardX,y:y,z:z,radius:Basketball.radius+1,restitution:0.72) { boardHits += 1 }
             let nearest=hoop.nearestRim(to:ground)
-            if contact(x:nearest.x,y:nearest.y,z:Hoop.height,radius:11,restitution:0.66) { rimHits += 1 }
+            if contact(x:nearest.x,y:nearest.y,z:Hoop.height,radius:Basketball.radius+3,restitution:0.66) { rimHits += 1 }
         }
         return rimHits+boardHits>previousHits
     }
