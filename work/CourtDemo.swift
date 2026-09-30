@@ -19,6 +19,8 @@ final class CourtView: NSView {
     var ownsBall = false
     var action = ""
     var elapsed: Double = 0
+    var airborne: Double? = nil
+    var airDuration = 1.4
     var clock: Double = 0
     var score = 0
     var flight: (start: CGPoint, end: CGPoint, time: Double, made: Bool, points: Int)?
@@ -57,19 +59,19 @@ final class CourtView: NSView {
         keys.insert(event.keyCode)
         if event.isARepeat { return }
         switch event.keyCode {
-        case 49: if action.isEmpty { begin("jump") }
+        case 49: if action.isEmpty && airborne == nil { airborne=0; airDuration=1.4; begin("jump") }
         case 7:
             if ownsBall && (action.isEmpty || action == "jump") {
-                begin(action == "jump" ? "jumpShot" : "shot")
+                begin(airborne != nil ? "jumpShot" : "shot")
                 message = "슛!"
             }
         case 6:
             if ownsBall && action.isEmpty {
-                if player.x > 1350 || player.x < 320 { begin("dunk"); message = "덩크!" }
+                if player.x > 1350 || player.x < 320 { airborne=0; airDuration=2.16; begin("dunk"); message = "덩크!" }
                 else { message = "덩크는 골대 가까이에서 가능합니다" }
             }
         case 8:
-            if action == "jump" { begin("block"); message = "점프 블로킹" }
+            if airborne != nil { begin("block"); message = "점프 블로킹" }
             else if action.isEmpty { begin("defense"); message = "수비 자세" }
         case 15: reset()
         default: break
@@ -80,7 +82,7 @@ final class CourtView: NSView {
     func begin(_ name: String) { action=name; elapsed=0 }
     func reset() {
         player=CGPoint(x:550,y:530); ball=CGPoint(x:836,y:570)
-        ownsBall=false; action=""; flight=nil; rebound=nil; score=0
+        ownsBall=false; action=""; airborne=nil; flight=nil; rebound=nil; score=0
         message="가운데 공에 가까이 가면 집습니다"
     }
     func duration(_ name: String) -> Double {
@@ -88,13 +90,16 @@ final class CourtView: NSView {
         case "defense": return 1.6; default: return 2.16 }
     }
     func jumpHeight() -> CGFloat {
-        guard ["jump","jumpShot","block","dunk"].contains(action) else { return 0 }
-        let t=elapsed/duration(action)
-        let amplitude: Double = action == "jump" || action == "dunk" ? 150 : 110
-        return CGFloat(t > 0.2 && t < 0.8 ? amplitude*sin(.pi*(t-0.2)/0.6) : 0)*0.30
+        guard let air=airborne else { return 0 }
+        let t=air/airDuration
+        return CGFloat(t > 0.2 && t < 0.8 ? 150*sin(.pi*(t-0.2)/0.6) : 0)*0.30
     }
     func tick() {
         clock += 1/60
+        if let air=airborne {
+            airborne=air+1/60
+            if airborne! >= airDuration { airborne=nil }
+        }
         var dx: CGFloat=0, dy: CGFloat=0
         if keys.contains(123) { dx -= 1 }; if keys.contains(124) { dx += 1 }
         if keys.contains(126) { dy -= 1 }; if keys.contains(125) { dy += 1 }
@@ -174,7 +179,14 @@ final class CourtView: NSView {
         if let clip=clips[name], !clip.frames.isEmpty {
             let index=action.isEmpty ? Int(clock*20)%clip.frames.count : min(clip.frames.count-1,Int(elapsed/duration(action)*Double(clip.frames.count)))
             let s:CGFloat=0.30
-            clip.frames[index].draw(in:NSRect(x:player.x-clip.width*s/2,y:player.y-clip.foot*s,width:clip.width*s,height:clip.height*s),from:.zero,operation:.sourceOver,fraction:1,respectFlipped:true,hints:nil)
+            let t=elapsed/duration(action)
+            var baked:Double=0
+            if ["jump","jumpShot","block","dunk"].contains(action) {
+                let span=action == "jump" ? 0.6 : 0.58
+                let amplitude:Double=action == "jump" || action == "dunk" ? 150 : 110
+                if t>0.2 && t<0.2+span { baked=amplitude*sin(.pi*(t-0.2)/span) }
+            }
+            clip.frames[index].draw(in:NSRect(x:player.x-clip.width*s/2,y:player.y-clip.foot*s+CGFloat(baked)*s-jumpHeight(),width:clip.width*s,height:clip.height*s),from:.zero,operation:.sourceOver,fraction:1,respectFlipped:true,hints:nil)
         }
         let b=ownsBall ? heldPosition() : ball
         NSColor(calibratedRed:0.95,green:0.49,blue:0.12,alpha:1).setFill()
@@ -212,10 +224,10 @@ enum Main {
         if CommandLine.arguments.contains("--self-test") {
             let view=CourtView(frame:NSRect(x:0,y:0,width:1200,height:747))
             view.timer?.invalidate()
-            precondition(view.court != nil && view.clips.count == 9,"Missing assets")
+            precondition(view.court != nil && view.clips.count == 8,"Missing assets")
             view.player=view.ball; view.tick()
             precondition(view.ownsBall,"Pickup failed")
-            view.begin("jump"); view.elapsed=0.7
+            view.begin("jump"); view.elapsed=0.7; view.airborne=0.7
             precondition(view.jumpHeight()>40,"Jump failed")
             view.reset(); view.flight=(CGPoint(x:1300,y:300),CGPoint(x:1537,y:305),0.79,false,2)
             view.tick(); precondition(view.score==0 && view.rebound != nil,"Miss must rebound")
