@@ -55,6 +55,16 @@ enum Facing: CaseIterable {
     }
 }
 
+struct DefenseOpponent {
+    var position=CGPoint(x:1100,y:530)
+    var facing:Facing = .right
+    var ownsBall=true
+    var phase="dribble"
+    var elapsed:Double=0
+    var pickupDelay:Double=0
+    var pose=CharacterPose.target(action:"",progress:0,airProgress:nil,walking:false,clock:0)
+}
+
 final class CourtView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -65,7 +75,7 @@ final class CourtView: NSView {
     var facing: Facing = .down
     var keys = Set<UInt16>()
     var running = false
-    var movementSpeed: CGFloat { running ? 5.6 : 3.5 }
+    var movementSpeed: CGFloat { action == "defense" ? 2.3 : running ? 5.6 : 3.5 }
     var player = CGPoint(x: 550, y: 530)
     var ball = CGPoint(x: 836, y: 570)
     var ownsBall = false
@@ -81,6 +91,17 @@ final class CourtView: NSView {
     var lastTick = ProcessInfo.processInfo.systemUptime
     var clock: Double = 0
     var score = 0
+    var defensePractice=false
+    var opponent=DefenseOpponent()
+    var opponentScore=0
+    var steals=0
+    var blocks=0
+    var defenseCooldown:Double=0
+    var defenseContactUsed=false
+    var defenseFeedback:Double=0
+    var defenseReach:CGFloat=0
+    var shotByOpponent=false
+    var shotBlocked=false
     var charging = false
     var chargeTime:Double = 0
     var gaugeWidth:Double = 0.32
@@ -140,7 +161,7 @@ final class CourtView: NSView {
         keys.insert(event.keyCode)
         if event.isARepeat { return }
         switch event.keyCode {
-        case 49: if action.isEmpty && airborne == nil { takeoffFeet=groundedFeet(); airborne=0; airDuration=jumpDuration; begin("jump") }
+        case 49: startJump()
         case 7:
             if ownsBall && (action.isEmpty || action == "jump") {
                 startCharge()
@@ -150,11 +171,8 @@ final class CourtView: NSView {
                 if let aim=aimedHoop(), aim.distance<=220 { takeoffFeet=groundedFeet(); airborne=0; airDuration=2.16; begin("dunk"); message = "덩크!" }
                 else { message = "덩크는 가까운 골대를 바라볼 때 가능합니다" }
             }
-        case 8:
-            if airborne != nil && ["jump","block"].contains(action) {
-                if action != "block" { begin("block") }; message = "점프 블로킹"
-            }
-            else if action.isEmpty { begin("defense"); message = "수비 자세" }
+        case 8: startDefense()
+        case 48: defensePractice.toggle(); reset()
         case 15: reset()
         default: break
         }
@@ -162,6 +180,25 @@ final class CourtView: NSView {
     override func keyUp(with event: NSEvent) {
         keys.remove(event.keyCode)
         if event.keyCode == 7 && charging { releaseCharge() }
+    }
+    func startJump() {
+        guard airborne == nil && (action.isEmpty || action == "defense") else { return }
+        takeoffFeet=groundedFeet(); airborne=0; airDuration=jumpDuration
+        if keys.contains(8) && !ownsBall {
+            begin("block"); defenseContactUsed=false
+            defenseCooldown=max(defenseCooldown,DefensePhysics.cooldown)
+            message="점프 블로킹 · 공이 손에 닿으면 쳐냅니다"
+        } else { begin("jump") }
+    }
+    func startDefense() {
+        guard !ownsBall else { message="공을 소유한 동안에는 수비할 수 없습니다"; return }
+        guard defenseCooldown<=0 else { return }
+        if airborne != nil && action == "jump" {
+            begin("block"); message="점프 블로킹 · 공이 손에 닿으면 쳐냅니다"
+        } else if airborne == nil && action.isEmpty {
+            begin("defense"); message="C 수비 · 상대 공에 손을 뻗어 스틸하세요"
+        } else { return }
+        defenseCooldown=DefensePhysics.cooldown; defenseContactUsed=false
     }
     func startCharge() {
         charging=true; chargeTime=0; gaugeMarker=0; accurateShot=false
@@ -208,10 +245,18 @@ final class CourtView: NSView {
         releaseTimeOverride=nil; carriedBall=nil
         charging=false; chargeTime=0; gaugeFeedback=0; accurateShot=false; elapsed=0
         shotCanScore=false
+        shotByOpponent=false; shotBlocked=false
+        defenseCooldown=0; defenseContactUsed=false; defenseFeedback=0; defenseReach=0
+        opponent=DefenseOpponent(); opponentScore=0; steals=0; blocks=0
         shotGroundStart=nil; shotGroundEnd=nil
         goalBall=nil; takeoffFeet=nil; shotPointsByHoop=[2,2]
         pose=CharacterPose.target(action:"",progress:0,airProgress:nil,walking:false,clock:clock)
         message="가운데 공에 가까이 가면 집습니다"
+        if defensePractice {
+            player=CGPoint(x:1190,y:530); facing = .left
+            ball=opponentBall().screen
+            message="수비 연습 · 상대에게 접근해 C 스틸 / Space + C 블로킹 · Tab 모드 전환"
+        }
     }
     func duration(_ name: String) -> Double {
         if name == action, let override=actionDurationOverride { return override }
@@ -247,15 +292,17 @@ final class CourtView: NSView {
             miss.velocity=CGPoint(x:index == 0 ? 180 : -180,y:body.velocity.y*0.35)
             miss.verticalVelocity=max(180,min(360,abs(body.verticalVelocity)*0.45))
             flight=nil; goalBall=nil; rebound=miss; ball=miss.screen
-            message="초록 구간 밖 · 슛 실패, 리바운드를 잡으세요"
+            message=shotBlocked ? "블로킹된 공 · 리바운드를 잡으세요" : "초록 구간 밖 · 슛 실패, 리바운드를 잡으세요"
             return
         }
         shotCanScore=false
-        score += shotPointsByHoop[index]
+        if shotByOpponent { opponentScore += shotPointsByHoop[index] }
+        else { score += shotPointsByHoop[index] }
         goalBall=(body,0); flight=nil; rebound=nil; ball=body.screen
-        message="골! \(shotPointsByHoop[index])점 · 링 통과 확인"
+        message="\(shotByOpponent ? "상대 골" : "골")! \(shotPointsByHoop[index])점 · 링 통과 확인"
     }
     func launchShot(from start: CGPoint) {
+        shotByOpponent=false; shotBlocked=false
         let ground=CGPoint(x:start.x,y:player.y)
         let aim=aimedHoop(from:ground)
         shotCanScore=aim.map { accurateShot || (action == "dunk" && $0.distance<=220) } ?? false
@@ -282,8 +329,152 @@ final class CourtView: NSView {
         shotPointsByHoop=Hoop.all.indices.map { CourtGeometry.shotPoints(feet:feet,hoopIndex:$0) }
         flight=ShotFlight(startGround:ground,startHeight:max(0,ground.y-Basketball.radius-start.y),endGround:end,distance:range,points:shotPointsByHoop[aim?.index ?? 0],targetHeight:aim != nil ? Hoop.height : 0)
     }
+    func jointWorld(_ index:Int,at position:CGPoint,facing direction:Facing,pose body:CharacterPose,jump:CGFloat,defending:CGFloat = 0)->DefenseHand {
+        let p=body.joints[index]
+        var x=(p.x-256)*0.3*direction.bodyWidth*direction.handSide
+        var depth:CGFloat=0
+        if defending>0 && [5,6].contains(index) {
+            let weight=max(0,min(1,(body.joints[6].x-347)/149))*defending
+            let reach:CGFloat=index == 6 ? 72 : 36
+            let fullX:CGFloat=index == 6 ? 496 : 376
+            let fullOffset=(fullX-256)*0.3*direction.bodyWidth*direction.handSide
+            x += (direction.vector.x*reach-fullOffset)*weight
+            depth=direction.vector.y*reach*weight/Hoop.groundDepthScale
+        }
+        return DefenseHand(ground:CGPoint(x:position.x+x,y:position.y+depth),height:(691-p.y)*0.3+jump-Basketball.radius)
+    }
+    func defenseHands()->[DefenseHand] {
+        [4,6].map { jointWorld($0,at:player,facing:facing,pose:pose,jump:jumpHeight(),defending:defenseReach) }
+    }
+    func opponentBall()->LooseBall {
+        let ground:CGPoint, height:CGFloat
+        if ["charge","shot"].contains(opponent.phase) {
+            let hand=opponent.pose.joints[6]
+            ground=CGPoint(x:opponent.position.x+(hand.x-256+8)*0.3*opponent.facing.bodyWidth*opponent.facing.handSide,y:opponent.position.y)
+            height=max(0,(691+24-hand.y)*0.3-Basketball.radius)
+        } else {
+            ground=CGPoint(x:opponent.position.x+31*opponent.facing.bodyWidth*opponent.facing.handSide,y:opponent.position.y)
+            height=CGFloat(abs(sin(clock*5.2)))*65
+        }
+        return LooseBall(ground:ground,velocity:.zero,height:height,verticalVelocity:0)
+    }
+    func launchOpponentShot() {
+        let body=opponentBall()
+        guard let aim=ShotAssist.target(from:body.ground,facing:opponent.facing.vector) else { return }
+        opponent.ownsBall=false; opponent.phase="shot"; opponent.elapsed=0.72
+        opponent.pickupDelay=0.8
+        shotByOpponent=true; shotBlocked=false
+        // The practice opponent releases at green timing; real rim entry still decides the goal.
+        shotCanScore=ShotGauge.isGreen(marker:0.5,width:ShotGauge.width(distance:aim.distance))
+        let feet=[8,10].map { jointWorld($0,at:opponent.position,facing:opponent.facing,pose:opponent.pose,jump:0).ground }
+        shotPointsByHoop=Hoop.all.indices.map { CourtGeometry.shotPoints(feet:feet,hoopIndex:$0) }
+        flight=ShotFlight(startGround:body.ground,startHeight:body.height,endGround:aim.end,distance:aim.distance,points:shotPointsByHoop[aim.index],targetHeight:Hoop.height)
+        rebound=nil; ball=body.screen
+        message="상대 슛! Space로 점프한 뒤 C로 블로킹하세요"
+    }
+    func updateOpponent(dt:Double) {
+        guard defensePractice else { return }
+        opponent.pickupDelay=max(0,opponent.pickupDelay-dt)
+        opponent.elapsed += dt
+        var walking=false
+        if opponent.ownsBall {
+            opponent.facing = .right
+            if opponent.phase == "dribble" {
+                let destination=1100+22*sin(opponent.elapsed*1.3)
+                opponent.position.x += max(-CGFloat(dt)*45,min(CGFloat(dt)*45,destination-opponent.position.x))
+                walking=true
+                if opponent.elapsed>=2.1 {
+                    opponent.phase="charge"; opponent.elapsed=0
+                    message="상대가 슛을 준비합니다 · 가까이서 점프 + C"
+                }
+            } else if opponent.phase == "charge" && opponent.elapsed>=1.1 {
+                launchOpponentShot()
+            }
+        } else {
+            if opponent.phase == "shot" && opponent.elapsed>=1.8 { opponent.phase="waiting"; opponent.elapsed=0 }
+            if !ownsBall && flight == nil && goalBall == nil && opponent.pickupDelay<=0 {
+                let ground=rebound?.ground ?? CGPoint(x:ball.x,y:ball.y+Basketball.radius)
+                let dx=ground.x-opponent.position.x, dy=ground.y-opponent.position.y
+                let distance=CGFloat(hypot(Double(dx),Double(dy)))
+                if distance>30 {
+                    let step=min(distance,CGFloat(dt)*115)
+                    opponent.position.x += dx/distance*step; opponent.position.y += dy/distance*step
+                    opponent.facing=Facing.from(dx:dx,dy:dy); walking=true
+                }
+            }
+        }
+        opponent.position.y=max(CourtBounds.top,min(CourtBounds.bottom,opponent.position.y))
+        let inset=CourtBounds.inset(at:opponent.position.y)+20
+        opponent.position.x=max(inset,min(world.width-inset,opponent.position.x))
+        let motion=opponent.phase == "charge" ? "charge" : opponent.phase == "shot" ? "shot" : ""
+        let progress=motion == "charge" ? opponent.elapsed/1.1 : opponent.elapsed/1.8
+        opponent.pose.approach(CharacterPose.target(action:motion,progress:progress,airProgress:nil,walking:walking,clock:clock),dt:dt)
+    }
+    func separatePlayers() {
+        guard defensePractice else { return }
+        let dx=player.x-opponent.position.x, dy=(player.y-opponent.position.y)*Hoop.groundDepthScale
+        let distance=CGFloat(hypot(Double(dx),Double(dy)))
+        if distance<54 {
+            let nx=distance>0.001 ? dx/distance : 1
+            let ny=distance>0.001 ? dy/distance : 0
+            player.x=opponent.position.x+nx*54
+            player.y=opponent.position.y+ny*54/Hoop.groundDepthScale
+            player.y=max(CourtBounds.top,min(CourtBounds.bottom,player.y))
+        }
+    }
+    @discardableResult func trySteal(previous:LooseBall,previousHands:[DefenseHand])->Bool {
+        guard defensePractice && opponent.ownsBall && !ownsBall && action == "defense" &&
+              !defenseContactUsed && elapsed>=0.10 && elapsed<duration(action)*0.85 else { return false }
+        let body=opponentBall()
+        guard DefensePhysics.inFront(ball:body.ground,defender:player,facing:facing.vector),
+              DefensePhysics.contact(from:previous,to:body,hands:defenseHands(),previousHands:previousHands) != nil else { return false }
+        opponent.ownsBall=false; opponent.phase="waiting"; opponent.elapsed=0; opponent.pickupDelay=0.8
+        ownsBall=true; carriedBall=body.screen; flight=nil; rebound=nil
+        shotCanScore=false; shotByOpponent=false; shotBlocked=false
+        steals += 1; defenseContactUsed=true; defenseFeedback=0.5
+        defenseCooldown=max(defenseCooldown,DefensePhysics.cooldown)
+        action=""; elapsed=0
+        message="스틸 성공! 공을 빼앗았습니다 · X 슛 / Z 덩크"
+        return true
+    }
+    @discardableResult func tryBlock(from previous:LooseBall,to body:LooseBall,hands:[DefenseHand],previousHands:[DefenseHand])->Bool {
+        guard !ownsBall && action == "block" && airborne != nil && jumpHeight()>5 &&
+              !defenseContactUsed && defensePractice && shotByOpponent else { return false }
+        guard DefensePhysics.inFront(ball:body.ground,defender:player,facing:facing.vector),
+              DefensePhysics.contact(from:previous,to:body,hands:hands,previousHands:previousHands) != nil else { return false }
+        let deflected=DefensePhysics.deflected(body,defender:player,facing:facing.vector)
+        flight=nil; rebound=deflected; ball=deflected.screen
+        shotCanScore=false; shotBlocked=true; defenseContactUsed=true
+        defenseCooldown=max(defenseCooldown,DefensePhysics.cooldown); defenseFeedback=0.5
+        opponent.pickupDelay=max(opponent.pickupDelay,0.65)
+        blocks += 1; message="블로킹 성공! 공이 튕겼습니다 · 리바운드를 잡으세요"
+        return true
+    }
+    @discardableResult func pickup(_ body:LooseBall,rebounding:Bool)->Bool {
+        guard body.height<35 else { return false }
+        let playerDistance=hypot(player.x-body.ground.x,player.y-body.ground.y)
+        let playerReady=(action.isEmpty || action == "defense") && airborne == nil && playerDistance<(rebounding ? 60 : 70)
+        let opponentDistance=hypot(opponent.position.x-body.ground.x,opponent.position.y-body.ground.y)
+        let opponentReady=defensePractice && !opponent.ownsBall && opponent.pickupDelay<=0 && opponentDistance<55
+        if playerReady && (!opponentReady || playerDistance<=opponentDistance) {
+            ownsBall=true; opponent.ownsBall=false; rebound=nil; shotCanScore=false; shotByOpponent=false
+            if action == "defense" { action=""; elapsed=0 }
+            message=rebounding ? "리바운드 획득" : "공 획득 · X 슛 / Space 점프 / Z 덩크"
+            return true
+        }
+        if opponentReady {
+            opponent.ownsBall=true; opponent.phase="dribble"; opponent.elapsed=0
+            rebound=nil; shotCanScore=false; shotByOpponent=false
+            ball=opponentBall().screen; message="상대 리바운드 · C로 스틸을 시도하세요"
+            return true
+        }
+        return false
+    }
     func tick(dt: Double = 1/60) {
+        let oldHands=defenseHands()
+        let oldOpponentBall=opponentBall()
         clock += dt
+        defenseCooldown=max(0,defenseCooldown-dt); defenseFeedback=max(0,defenseFeedback-dt)
         gaugeFeedback=max(0,gaugeFeedback-dt)
         if charging {
             chargeTime += dt
@@ -301,6 +492,7 @@ final class CourtView: NSView {
             player.x += dx/length*movementSpeed*CGFloat(dt*60); player.y += dy/length*movementSpeed*CGFloat(dt*60)
         }
         player.y=max(CourtBounds.top,min(CourtBounds.bottom,player.y))
+        updateOpponent(dt:dt); separatePlayers()
         let inset=CourtBounds.inset(at:player.y)
         player.x=max(inset,min(world.width-inset,player.x))
         if !action.isEmpty {
@@ -319,10 +511,18 @@ final class CourtView: NSView {
             if action == "defense" && keys.contains(8) && elapsed > 0.55 && elapsed < 1.2 { elapsed=0.8 }
             if !charging && elapsed >= duration(action) { action=""; elapsed=0 }
         }
-        if var goal=goalBall {
+        if action.isEmpty && airborne == nil && !ownsBall && keys.contains(8) && defenseCooldown<=0 { startDefense() }
+        let target=CharacterPose.target(action:action,progress:elapsed/duration(action),airProgress:airborne.map { $0/airDuration },walking:dx != 0 || dy != 0,clock:clock)
+        pose.approach(target,dt:dt)
+        defenseReach += ((action == "defense" ? 1 : 0)-defenseReach)*CGFloat(1-exp(-dt/0.055))
+        let newHands=defenseHands()
+        if defensePractice && opponent.ownsBall {
+            ball=opponentBall().screen
+            trySteal(previous:oldOpponentBall,previousHands:oldHands)
+        } else if var goal=goalBall {
             goal.time += dt
             ball=CGPoint(x:goal.body.screen.x,y:goal.body.screen.y+CGFloat(goal.time)*85)
-            if goal.time>=0.30 { goalBall=nil; ball=CGPoint(x:836,y:570); message="골! 공이 가운데로 돌아왔습니다" }
+            if goal.time>=0.30 { goalBall=nil; ball=CGPoint(x:836,y:570); message="\(shotByOpponent ? "상대 골" : "골")! 공이 가운데로 돌아왔습니다" }
             else { goalBall=goal }
         } else if var f=flight {
             let oldTime=f.time; f.time += dt
@@ -331,6 +531,12 @@ final class CourtView: NSView {
             let steps=max(1,Int(ceil(dt*480)))
             for index in 1...steps {
                 var body=f.sample(at:min(f.duration,oldTime+dt*Double(index)/Double(steps)))
+                func hands(at fraction:CGFloat)->[DefenseHand] {
+                    zip(oldHands,newHands).map { old,new in DefenseHand(ground:CGPoint(x:old.ground.x+(new.ground.x-old.ground.x)*fraction,y:old.ground.y+(new.ground.y-old.ground.y)*fraction),height:old.height+(new.height-old.height)*fraction) }
+                }
+                if action == "block" && defensePractice && shotByOpponent && tryBlock(from:previous,to:body,hands:hands(at:CGFloat(index)/CGFloat(steps)),previousHands:hands(at:CGFloat(index-1)/CGFloat(steps))) {
+                    interrupted=true; break
+                }
                 if body.collideWithHoops() {
                     rebound=body; flight=nil; ball=body.screen; interrupted=true
                     message=body.boardHits>0 ? "백보드에 맞고 튕겼습니다" : "림에 맞고 튕겼습니다"
@@ -350,16 +556,14 @@ final class CourtView: NSView {
                 }
             }
         } else if var r=rebound {
+            let previous=r
             r.step(dt:dt); ball=r.screen
-            if let hoop=r.scoredHoop { awardGoal(hoop,body:r) }
-            else if r.height<35 && hypot(player.x-r.ground.x,player.y-r.ground.y)<60 && action.isEmpty {
-                ownsBall=true; rebound=nil; shotCanScore=false; message="리바운드 획득"
-            } else { rebound=r }
-        } else if !ownsBall && hypot(player.x-ball.x,player.y-ball.y)<70 && action.isEmpty {
-            ownsBall=true; shotCanScore=false; message="공 획득 · X 슛 / Space 점프 / Z 덩크"
+            if tryBlock(from:previous,to:r,hands:newHands,previousHands:oldHands) { }
+            else if let hoop=r.scoredHoop { awardGoal(hoop,body:r) }
+            else if !pickup(r,rebounding:true) { rebound=r }
+        } else if !ownsBall {
+            pickup(LooseBall(ground:CGPoint(x:ball.x,y:ball.y+Basketball.radius),velocity:.zero,height:0,verticalVelocity:0),rebounding:false)
         }
-        let target=CharacterPose.target(action:action,progress:elapsed/duration(action),airProgress:airborne.map { $0/airDuration },walking:dx != 0 || dy != 0,clock:clock)
-        pose.approach(target,dt:dt)
         // Navigation uses grounded feet, never the head or airborne sprite height.
         let footOffsets=[8,10].map { (pose.joints[$0].x-256)*0.3*facing.bodyWidth*facing.handSide }
         player.x=max(CourtBounds.inset(at:player.y)-footOffsets.min()!,
@@ -383,6 +587,22 @@ final class CourtView: NSView {
         }
         let bounce=action.isEmpty ? CGFloat(abs(sin(clock*5.2)))*65 : 65
         return CGPoint(x:player.x+31*facing.bodyWidth*facing.handSide,y:player.y-Basketball.radius-bounce-jumpHeight())
+    }
+    func drawCharacter(at position:CGPoint,facing direction:Facing,pose body:CharacterPose,jump:CGFloat,color:NSColor,defending:CGFloat = 0,label:String? = nil) {
+        NSColor.black.withAlphaComponent(0.2).setFill()
+        NSBezierPath(ovalIn:NSRect(x:position.x-27,y:position.y-8,width:54,height:16)).fill()
+        if let label {
+            color.setStroke()
+            let ring=NSBezierPath(ovalIn:NSRect(x:position.x-30,y:position.y-10,width:60,height:20)); ring.lineWidth=2; ring.stroke()
+            label.draw(at:CGPoint(x:position.x-30,y:position.y+15),withAttributes:[.font:NSFont.systemFont(ofSize:16,weight:.bold),.foregroundColor:color])
+        }
+        color.setStroke()
+        for chain in [[0,2],[1,3,4],[1,5,6],[2,7,8],[2,9,10]] {
+            let path=NSBezierPath(); path.lineWidth=3.6; path.lineCapStyle = .round; path.lineJoinStyle = .round
+            path.move(to:jointWorld(chain[0],at:position,facing:direction,pose:body,jump:jump,defending:defending).screen)
+            for index in chain.dropFirst() { path.line(to:jointWorld(index,at:position,facing:direction,pose:body,jump:jump,defending:defending).screen) }; path.stroke()
+        }
+        heads[direction.head]?.draw(in:NSRect(x:position.x-37.5,y:position.y+(body.headY-691)*0.3-jump,width:75,height:84),from:.zero,operation:.sourceOver,fraction:1,respectFlipped:true,hints:nil)
     }
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.setFill(); bounds.fill()
@@ -425,23 +645,25 @@ final class CourtView: NSView {
             let label=aim.map { "\($0.index == 0 ? "왼쪽" : "오른쪽") 골대 · \(CourtGeometry.shotPoints(feet:airborne != nil ? takeoffFeet ?? groundedFeet() : groundedFeet(),hoopIndex:$0.index))점" } ?? "골대를 향해 방향을 맞추세요"
             label.draw(at:CGPoint(x:max(10,min(1400,player.x-85)),y:player.y+22),withAttributes:[.font:NSFont.systemFont(ofSize:16,weight:.semibold),.foregroundColor:color])
         }
-        NSColor.black.withAlphaComponent(0.2).setFill()
-        NSBezierPath(ovalIn:NSRect(x:player.x-27,y:player.y-8,width:54,height:16)).fill()
-        let s:CGFloat=0.30
-        func joint(_ index:Int)->CGPoint {
-            let p=pose.joints[index]
-            return CGPoint(x:player.x+(p.x-256)*s*facing.bodyWidth*facing.handSide,
-                           y:player.y+(p.y-691)*s-jumpHeight())
+        func drawPlayer() {
+            drawCharacter(at:player,facing:facing,pose:pose,jump:jumpHeight(),color:.black,defending:defenseReach,label:defensePractice ? "플레이어" : nil)
         }
-        NSColor.black.setStroke()
-        for chain in [[0,2],[1,3,4],[1,5,6],[2,7,8],[2,9,10]] {
-            let path=NSBezierPath(); path.lineWidth=12*s; path.lineCapStyle = .round; path.lineJoinStyle = .round
-            path.move(to:joint(chain[0])); for index in chain.dropFirst() { path.line(to:joint(index)) }; path.stroke()
+        if defensePractice {
+            if player.y<opponent.position.y { drawPlayer() }
+            drawCharacter(at:opponent.position,facing:opponent.facing,pose:opponent.pose,jump:0,color:NSColor(calibratedRed:0.8,green:0.15,blue:0.18,alpha:1),label:"연습 상대")
+            if player.y>=opponent.position.y { drawPlayer() }
+            if opponent.ownsBall && opponent.phase == "charge" {
+                "슛 준비".draw(at:CGPoint(x:opponent.position.x-35,y:opponent.position.y-228),withAttributes:[.font:NSFont.systemFont(ofSize:19,weight:.bold),.foregroundColor:NSColor.systemRed])
+            }
+        } else { drawPlayer() }
+        if defenseFeedback>0 {
+            let ring=NSBezierPath(ovalIn:NSRect(x:player.x-42,y:player.y-14,width:84,height:28))
+            NSColor.systemGreen.setStroke(); ring.lineWidth=4; ring.stroke()
         }
-        heads[facing.head]?.draw(in:NSRect(x:player.x-37.5,y:player.y+(pose.headY-691)*s-jumpHeight(),width:75,height:84),from:.zero,operation:.sourceOver,fraction:1,respectFlipped:true,hints:nil)
         if !ownsBall {
             let ground:CGPoint
-            if let r=rebound { ground=r.ground }
+            if defensePractice && opponent.ownsBall { ground=opponentBall().ground }
+            else if let r=rebound { ground=r.ground }
             else if let goal=goalBall { ground=goal.body.ground }
             else if let f=flight { ground=f.sample(at:f.time).ground }
             else { ground=CGPoint(x:ball.x,y:ball.y+Basketball.radius) }
@@ -464,9 +686,10 @@ final class CourtView: NSView {
             NSRect(x:rect.minX+rect.width*gaugeMarker-1.5,y:rect.minY-3,width:3,height:22).fill()
         }
         NSColor(calibratedWhite:0.10,alpha:1).setFill(); NSRect(x:0,y:941,width:1672,height:99).fill()
-        let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:24,weight:.medium),.foregroundColor:NSColor.white]
-        "방향키 이동   Shift 달리기   Space 점프   X 누르고 놓기: 슛   Z 덩크   C 수비 / 블로킹   R 초기화".draw(at:NSPoint(x:45,y:960),withAttributes:attrs)
-        "\(score)점 · \(message) · \(updateStatus)".draw(at:NSPoint(x:45,y:1000),withAttributes:[.font:NSFont.systemFont(ofSize:18),.foregroundColor:NSColor.lightGray])
+        let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:22,weight:.medium),.foregroundColor:NSColor.white]
+        "방향키 이동   Shift 달리기   Space 점프   X 누르고 놓기: 슛   Z 덩크   C 스틸 / 블로킹   Tab 모드   R 초기화".draw(at:NSPoint(x:35,y:958),withAttributes:attrs)
+        let status=defensePractice ? "수비 연습 · 나 \(score) : 상대 \(opponentScore) · 스틸 \(steals) / 블록 \(blocks)" : "슛 연습 · \(score)점"
+        "\(status) · \(message) · \(updateStatus)".draw(at:NSPoint(x:35,y:997),withAttributes:[.font:NSFont.systemFont(ofSize:17),.foregroundColor:NSColor.lightGray])
     }
 }
 
@@ -487,16 +710,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
+
+func runDefenseGameplayTests(_ view:CourtView) {
+    view.keys.removeAll(); view.running=false; view.defensePractice=true; view.reset()
+    for _ in 0..<540 { view.tick() }
+    precondition(view.opponentScore>0 && view.score==0,"Practice opponent must dribble, shoot and own its score")
+    for direction in Facing.allCases {
+        view.reset(); view.clock=0.12; view.opponent.position=CGPoint(x:1000,y:600)
+        let body=view.opponentBall()
+        view.player=CGPoint(x:body.ground.x-direction.vector.x*72,y:body.ground.y-direction.vector.y*72/Hoop.groundDepthScale)
+        view.facing=direction; view.begin("defense"); view.elapsed=0.8
+        view.pose=CharacterPose.target(action:"defense",progress:0.5,airProgress:nil,walking:false,clock:view.clock)
+        view.defenseReach=1
+        let hands=view.defenseHands()
+        precondition(view.trySteal(previous:body,previousHands:hands),"Eight-direction hand contact failed: \(direction)")
+        precondition(view.ownsBall && !view.opponent.ownsBall && view.steals==1 && view.flight==nil,"Steal must transfer a single ball")
+        precondition(!view.trySteal(previous:body,previousHands:hands) && view.steals==1,"One reach cannot steal twice")
+    }
+    view.reset(); view.clock=0.12; view.player=CGPoint(x:1350,y:530); view.facing = .left
+    view.begin("defense"); view.elapsed=0.8
+    view.pose=CharacterPose.target(action:"defense",progress:0.5,airProgress:nil,walking:false,clock:view.clock)
+    view.defenseReach=1
+    precondition(!view.trySteal(previous:view.opponentBall(),previousHands:view.defenseHands()),"Distant C must not steal")
+    view.defensePractice=false; view.reset(); view.startDefense()
+    precondition(view.action=="defense" && view.defenseCooldown>0,"Defense input did not activate")
+    view.action=""; view.startDefense()
+    precondition(view.action.isEmpty,"Repeated defense input bypassed cooldown")
+    view.defenseCooldown=0; view.ownsBall=true; view.startDefense()
+    precondition(view.action.isEmpty && view.ownsBall,"Cannot defend one's own held ball")
+    view.ownsBall=false; view.begin("defense"); view.player=CGPoint(x:550,y:600)
+    view.running=true; view.keys=[124,8]; view.tick()
+    precondition(abs(view.player.x-552.3)<0.001,"Defensive stance must move slower even with Shift")
+    view.keys.removeAll(); view.running=false
+    view.keys=[8]; view.startJump()
+    precondition(view.action=="block" && view.airborne==0,"Holding C then Space must jump-block without releasing stance")
+    view.keys.removeAll()
+    for dt in [1.0/60,1.0/120,0.05] {
+        for enemyShot in [true,false] {
+            view.defensePractice=true; view.reset()
+            view.opponent.ownsBall=false; view.opponent.phase="waiting"; view.opponent.pickupDelay=10
+            view.player=CGPoint(x:1000,y:530); view.facing = .right
+            view.airborne=0.45; view.begin("block"); view.elapsed=0.30
+            view.pose=CharacterPose.target(action:"block",progress:0.4,airProgress:0.5,walking:false,clock:view.clock)
+            let hand=view.defenseHands()[1]
+            view.flight=ShotFlight(startGround:CGPoint(x:hand.ground.x+8,y:hand.ground.y),startHeight:hand.height,endGround:CGPoint(x:hand.ground.x-180,y:hand.ground.y),distance:188,points:2,targetHeight:hand.height)
+            view.shotByOpponent=enemyShot; view.shotCanScore=true
+            view.tick(dt:dt)
+            if enemyShot {
+                precondition(view.blocks==1 && view.flight==nil && view.rebound != nil,"Airborne hand contact must interrupt flight at \(dt)")
+                precondition(!view.shotCanScore && view.rebound!.verticalVelocity<0,"Block must knock down the ball and cancel scoring eligibility")
+                for _ in 0..<Int(2/dt) { view.tick(dt:dt) }
+                precondition(view.blocks==1 && view.score==0 && view.opponentScore==0 && view.ball.x != 836,"Blocked ball must rebound, not score/reset/re-block")
+            } else { precondition(view.blocks==0 && view.flight != nil,"Player cannot block their own shot") }
+        }
+        view.reset(); view.keys=[8]; view.startDefense()
+        for _ in 0..<Int(1/dt) { view.tick(dt:dt) }
+        precondition(view.steals==1 && view.ownsBall && !view.opponent.ownsBall,"Real dribble/held C steal failed at \(dt)")
+        view.keys.removeAll()
+        var naturalBlock=false
+        for timing in [0.65,0.75,0.85,0.95] {
+            view.clock=0; view.reset()
+            while view.opponent.phase != "charge" || view.opponent.elapsed<timing { view.tick(dt:dt) }
+            view.keys=[8]; view.startJump()
+            for _ in 0..<Int(1.5/dt) { view.tick(dt:dt) }
+            view.keys.removeAll()
+            if view.blocks>0 { naturalBlock=true; break }
+        }
+        precondition(naturalBlock,"Normal opponent shot must be blockable with Space+C at \(dt)")
+    }
+    view.defensePractice=false; view.keys.removeAll(); view.reset()
+}
 @main
 enum Main {
     static func main() {
         let app=NSApplication.shared
-        if let flag=CommandLine.arguments.firstIndex(of:"--render-preview"),flag+1<CommandLine.arguments.count {
+        if let flag=CommandLine.arguments.firstIndex(where:{ ["--render-preview","--render-defense-preview"].contains($0) }),flag+1<CommandLine.arguments.count {
             let view=CourtView(frame:NSRect(x:0,y:0,width:1672,height:1040)); view.timer?.invalidate()
             view.player=CGPoint(x:980,y:530); view.facing = .right; view.ownsBall=true
             view.startCharge(); view.chargeTime=0.55; view.elapsed=0.55
             view.pose=CharacterPose.target(action:"charge",progress:0.55/2.16,airProgress:nil,walking:false,clock:0)
             view.carriedBall=view.heldPosition(); view.updateGauge()
+            if CommandLine.arguments[flag] == "--render-defense-preview" {
+                view.defensePractice=true
+                for timing in [0.65,0.75,0.85,0.95] {
+                    view.clock=0; view.keys.removeAll(); view.reset()
+                    while view.opponent.phase != "charge" || view.opponent.elapsed<timing { view.tick() }
+                    view.keys=[8]; view.startJump()
+                    for _ in 0..<90 { view.tick(); if view.blocks>0 { break } }
+                    if view.blocks>0 { break }
+                }
+                precondition(view.blocks>0,"Defense preview must show a real blocked shot")
+            }
             view.updateStatus="v\(Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "")"
             let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds)!
             view.cacheDisplay(in:view.bounds,to:bitmap)
@@ -506,7 +810,7 @@ enum Main {
         if CommandLine.arguments.contains("--self-test") {
             let view=CourtView(frame:NSRect(x:0,y:0,width:1200,height:747))
             view.timer?.invalidate()
-            runShotPhysicsTests(); runCourtGeometryTests()
+            runShotPhysicsTests(); runCourtGeometryTests(); runDefensePhysicsTests()
             precondition(abs(ShotGauge.width(distance:200)-0.32)<0.0001)
             precondition(abs(ShotGauge.width(distance:450)-0.16)<0.0001)
             precondition(abs(ShotGauge.width(distance:650)-0.06)<0.0001)
@@ -759,7 +1063,8 @@ enum Main {
                     }
                 }
             }
-            print("PASS: strict green timing/frozen eligibility/no lucky banks, dunks, physics scoring, 2/3 points, aim assist, rebounds and motion")
+            runDefenseGameplayTests(view)
+            print("PASS: defense contacts/steals/blocks/opponent/cooldown; strict green timing, dunks, physics scoring, 2/3 points, aim assist, rebounds and motion")
             return
         }
         app.setActivationPolicy(.regular)

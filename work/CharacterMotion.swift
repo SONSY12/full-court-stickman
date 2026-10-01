@@ -39,7 +39,8 @@ struct CharacterPose {
             le=CGPoint(x:mix(198,142,lift)-62*defense,y:mix(388,260,lift)-52*defense)
             lh=CGPoint(x:mix(165,195,lift)-149*defense,y:mix(449,55,lift)-119*defense)
             re=CGPoint(x:mix(314,365,lift)+62*defense,y:mix(388,235,lift)-52*defense)
-            rh=CGPoint(x:mix(347,310,lift)+149*defense,y:mix(449,40,lift)-119*defense)
+            // Lead hand reaches down toward the dribble; the other guards high.
+            rh=CGPoint(x:mix(347,310,lift)+149*defense,y:mix(449,40,lift)+72*defense)
         }
         // All arm joints share the same body offset.
         le.y += offset; lh.y += offset; re.y += offset; rh.y += offset
