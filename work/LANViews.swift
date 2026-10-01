@@ -45,7 +45,7 @@ final class LANMatchView:NSView {
             let state=latest.players[local]
             for f in network.input.history {
                 let dx=CGFloat(f.x),dy=CGFloat(f.y),length=sqrt(dx*dx+dy*dy)
-                let speed:CGFloat=[.defense,.steal].contains(state.action) ? 138 : state.action == .charge ? 105 : f.buttons&InputFrame.run != 0 ? 336 : 210
+                let speed:CGFloat=[.defense,.steal].contains(state.action) ? (f.buttons&InputFrame.run != 0 ? 302.4 : 189) : state.action == .charge ? 105 : f.buttons&InputFrame.run != 0 ? 336 : 210
                 if length>0 { point.x += dx/length*speed/60;point.y += dy/length*speed/60 }
                 point.y=max(CourtBounds.top,min(CourtBounds.bottom,point.y));point.x=max(CourtBounds.inset(at:point.y)+20,min(1672-CourtBounds.inset(at:point.y)-20,point.x))
             }
@@ -115,7 +115,7 @@ final class LANMatchView:NSView {
             NSColor.black.setFill();rect.insetBy(dx:-3,dy:-3).fill();NSGradient(colors:[.red,.orange,.yellow,.orange,.red])!.draw(in:rect,angle:0);NSColor.systemGreen.setFill();NSRect(x:rect.midX-rect.width*width/2,y:rect.minY,width:rect.width*width,height:rect.height).fill();NSColor.white.setFill();NSRect(x:rect.minX+rect.width*marker-1.5,y:rect.minY-3,width:3,height:21).fill()
         }
         NSColor(calibratedWhite:0.08,alpha:1).setFill();NSRect(x:0,y:viewport.maxY,width:bounds.width,height:104).fill()
-        label("방향키 이동 · Shift 달리기 · X 누르고 놓기 슛 · Z 덩크\nSpace 점프 · C 스틸 / 블록 · Esc 일시정지",at:CGPoint(x:16,y:viewport.maxY+10),size:14,width:bounds.width-32)
+        label("방향키 이동 · Shift 달리기 · X 누르고 놓기 슛 · Z 덩크\nSpace 점프 · C 수비 / 스틸 · V 점프 블록 · Esc 일시정지",at:CGPoint(x:16,y:viewport.maxY+10),size:14,width:bounds.width-32)
         label("\(official.event.kind) · 스틸 \(p.steals) / 블록 \(p.blocks) / 리바운드 \(p.rebounds)",at:CGPoint(x:16,y:viewport.maxY+64),size:14,color:.lightGray,width:bounds.width-32)
         if [.countdown,.restart,.endingShot].contains(official.phase) {
             let title=official.phase == .countdown ? "\(max(1,Int(ceil(3-official.phaseTime))))" : official.phase == .restart ? "중앙 재개" : "마지막 슛 확인 중"
@@ -213,7 +213,7 @@ final class GameRootView:NSView,NSTextFieldDelegate {
         view.exitToMenu={ [weak self] in self?.showHome() };practice=view;addSubview(view);window?.makeFirstResponder(view)
     }
     func showHelp() {
-        screen = .help;menu("조작 안내","방향키 이동 · Shift 달리기 · X 누르고 놓기 슛\nSpace 점프 · Z 가까운 골대 덩크 · C 스틸/블록\n충전 중 Space로 점프슛 준비 · C→Space / Space→C 모두 블록\n대전 중 Esc: 전체 일시정지 요청 · 준비 후 방장이 재개\n방장: 오른쪽 공격 / 참가자: 왼쪽 공격\n3분 경기 · 14초 공격 제한 · 동점은 선득점 연장\n연습에서만 R 초기화 / Tab 모드 전환 · Command-Q 종료\n메뉴: ↑↓ 선택 / Return 실행 · Tab으로 입력칸 선택")
+        screen = .help;menu("조작 안내","방향키 이동 · Shift 달리기 · X 누르고 놓기 슛\nSpace 일반 점프 · Z 덩크 · C 지상 수비/스틸 · V 점프 블록\n수비 이동/달리기: 일반 속도의 90% · C+Shift 허용\n공중에서 V: 체공 시간을 유지한 채 블록 자세로 연결\n대전 중 Esc: 전체 일시정지 요청 · 준비 후 방장이 재개\n방장: 오른쪽 공격 / 참가자: 왼쪽 공격\n3분 경기 · 14초 공격 제한 · 동점은 선득점 연장\n연습에서만 R 초기화 / Tab 모드 전환 · Command-Q 종료\n메뉴: ↑↓ 선택 / Return 실행 · Tab으로 입력칸 선택")
         button("시작 메뉴") { [weak self] in self?.showHome() };focusMenu()
     }
     func networkChanged() {

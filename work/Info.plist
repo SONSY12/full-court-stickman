@@ -5,8 +5,8 @@
 <key>CFBundleIdentifier</key><string>com.sonsy12.fullcourtstickman.lanbeta</string>
 <key>CFBundleName</key><string>Full Court Stickman LAN Beta</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>0.5.2</string>
-<key>CFBundleShortVersionString</key><string>0.5.0-beta.3</string>
+<key>CFBundleVersion</key><string>0.5.3</string>
+<key>CFBundleShortVersionString</key><string>0.5.0-beta.4</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSLocalNetworkUsageDescription</key><string>같은 Wi-Fi의 맥북과 농구 대전 방을 찾고 게임 입력·상태를 주고받습니다.</string>

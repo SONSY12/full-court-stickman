@@ -38,7 +38,7 @@ struct PlayerState {
         switch action { case .idle:return air == nil ? "" : "jump"; case .shot:return air == nil ? "shot" : "jumpShot"; case .steal:return "defense"; case .catchBall:return "charge"; default:return action.rawValue }
     }
     var speed:CGFloat {
-        if [.defense,.steal].contains(action) { return 138 }
+        if [.defense,.steal].contains(action) { return (input?.buttons ?? 0)&InputFrame.run != 0 ? 302.4 : 189 }
         if action == .charge { return 105 }
         return (input?.buttons ?? 0)&InputFrame.run != 0 ? 336 : 210
     }
@@ -191,13 +191,17 @@ final class GameSession {
         case .jump:
             if players[id].air == nil && [.idle,.defense,.steal,.charge,.catchBall].contains(players[id].action) {
                 players[id].takeoffFeet=ActionSystem.feet(players[id]);players[id].air=0;players[id].airDuration=0.9
-                if owner != id && (players[id].input?.buttons ?? 0)&InputFrame.defend != 0 { players[id].action = .block;players[id].elapsed=0;players[id].contactUsed=false }
+            }
+        case .block:
+            if owner != id && [.idle,.defense,.steal].contains(players[id].action) {
+                if players[id].air == nil { players[id].takeoffFeet=ActionSystem.feet(players[id]);players[id].air=0;players[id].airDuration=0.9 }
+                players[id].action = .block;players[id].elapsed=0;players[id].contactUsed=false
             }
         case .dunk:
             if owner==id && players[id].action == .idle && (aimed(id)?.distance ?? .infinity)<=220 { players[id].takeoffFeet=ActionSystem.feet(players[id]);players[id].action = .dunk;players[id].elapsed=0;players[id].air=0;players[id].airDuration=1.1 }
         case .defend:
-            if owner != id && players[id].cooldown<=0 && [.idle,.defense,.steal].contains(players[id].action) {
-                players[id].action=players[id].air == nil ? .steal : .block;players[id].elapsed=0;players[id].contactUsed=false;players[id].cooldown=0.7
+            if owner != id && players[id].air == nil && players[id].cooldown<=0 && [.idle,.defense,.steal].contains(players[id].action) {
+                players[id].action = .steal;players[id].elapsed=0;players[id].contactUsed=false;players[id].cooldown=0.7
             }
         }
     }
@@ -263,6 +267,7 @@ final class GameSession {
             if let air=p.air { p.air=air+dt;if p.air!>=p.airDuration { p.air=nil;p.takeoffFeet=nil } }
             if [.shot,.steal,.block,.catchBall].contains(p.action),p.elapsed>=p.actionDuration { p.action=(p.input?.buttons ?? 0)&InputFrame.defend != 0 && owner != id ? .defense : .idle;p.elapsed=0 }
             if p.action == .defense && (p.input?.buttons ?? 0)&InputFrame.defend == 0 { p.action = .idle;p.elapsed=0 }
+            if p.action == .idle && p.air == nil && owner != id && (p.input?.buttons ?? 0)&InputFrame.defend != 0 { p.action = .defense;p.elapsed=0 }
             if [.defense,.steal,.block].contains(p.action),owner != id {
                 let other=players[1-id].position;p.facing=Facing.closest(to:CGPoint(x:other.x-p.position.x,y:other.y-p.position.y),previous:p.facing)
             }
@@ -288,7 +293,7 @@ final class GameSession {
             let target=ActionSystem.held(players[owner]),f=CGFloat(1-exp(-dt/0.04))
             body.ground.x += (target.ground.x-body.ground.x)*f;body.ground.y += (target.ground.y-body.ground.y)*f;body.height += (target.height-body.height)*f
             let defender=1-owner,p=players[defender]
-            if p.action == .steal,p.elapsed>=DefensePhysics.stealStart,p.elapsed<=DefensePhysics.stealEnd,!p.contactUsed,
+            if p.action == .steal,p.air == nil,p.elapsed>=DefensePhysics.stealStart,p.elapsed<=DefensePhysics.stealEnd,!p.contactUsed,
                DefensePhysics.inFront(ball:body.ground,defender:p.position,facing:p.facing.vector),
                DefensePhysics.contact(from:oldBody,to:body,hands:newHands[defender],previousHands:oldHands[defender],radius:DefensePhysics.stealRadius) != nil {
                 players[defender].contactUsed=true;players[defender].steals += 1;grant(defender,rebound:false);players[defender].action = .catchBall;emit("스틸",player:defender)

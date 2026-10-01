@@ -46,7 +46,25 @@ func runMatchTests() {
     precondition(same.players[0].air==0 && same.players[0].action == .charge && same.players[0].chargeTime==0.4,"Jump must preserve charge")
     same.players[1].action = .defense;same.players[1].input=InputFrame(matchID:same.matchID,seq:1,tick:0,x:1,y:0,buttons:InputFrame.defend,actions:[])
     same.execute(ActionCommand(id:1,tick:0,action:.jump),player:1)
-    precondition(same.players[1].action == .block && same.players[1].air==0,"C then Space must block")
+    precondition(same.players[1].action != .block && same.players[1].air==0,"C then Space must remain an ordinary jump")
+    same.players[1].air=0.3;let feet=same.players[1].takeoffFeet
+    same.execute(ActionCommand(id:2,tick:0,action:.block),player:1)
+    precondition(same.players[1].action == .block && same.players[1].air==0.3 && same.players[1].takeoffFeet==feet,"Airborne V must preserve jump and takeoff")
+    same.players[1].air=nil;same.players[1].action = .idle
+    same.execute(ActionCommand(id:3,tick:0,action:.block),player:1)
+    precondition(same.players[1].air==0 && same.players[1].action == .block,"Grounded V must jump-block")
+    same.players[0].air=nil;same.players[0].action = .idle
+    same.execute(ActionCommand(id:4,tick:0,action:.block),player:0)
+    precondition(same.players[0].air==nil && same.players[0].action == .idle,"Ball owner cannot block")
+    var defender=PlayerState(id:1,position:.zero,facing:.left);defender.action = .defense
+    precondition(defender.speed==189,"Defense must retain ninety percent walk speed")
+    defender.input=InputFrame(matchID:same.matchID,seq:1,tick:0,x:1,y:0,buttons:InputFrame.run,actions:[])
+    precondition(abs(defender.speed-302.4)<0.001,"Defense Shift must retain ninety percent run speed")
+    let landing=GameSession();landing.phase = .playing;landing.owner=0;landing.players[1].air=0.899
+    landing.players[1].input=InputFrame(matchID:landing.matchID,seq:1,tick:0,x:0,y:0,buttons:InputFrame.defend,actions:[])
+    landing.execute(ActionCommand(id:1,tick:0,action:.defend),player:1)
+    precondition(landing.players[1].action != .block,"Airborne C must not block")
+    landing.step();precondition(landing.players[1].action == .defense && landing.players[1].air==nil,"Held C must resume stance on landing")
     let clock=GameSession();clock.begin();clock.phase = .playing;clock.arrange(0);clock.shotClock=0.01;clock.step()
     precondition(clock.phase == .restart && clock.possession==1,"14-second violation must turn over")
     clock.arrange(0);clock.shotClock=4;clock.grant(0,rebound:true);precondition(clock.shotClock==6,"Offensive rebound minimum six")
@@ -135,7 +153,7 @@ func runMatchTests() {
             m.players[defender].position=CGPoint(x:m.players[attacker].position.x+sign*85,y:530)
             m.players[defender].facing=sign>0 ? .left : .right
             m.players[defender].input=InputFrame(matchID:m.matchID,seq:1,tick:0,x:0,y:0,buttons:InputFrame.defend,actions:[])
-            m.execute(ActionCommand(id:1,tick:0,action:.jump),player:defender)
+            m.execute(ActionCommand(id:1,tick:0,action:.block),player:defender)
             for _ in 0..<preparation { m.step() }
             m.launch(attacker,marker:0.5,dunk:false)
             for _ in 0..<65 { m.step() }
@@ -159,8 +177,8 @@ func runLANViewTests() {
     let view=LANMatchView(frame:root.bounds,network:root.network);view.timer?.invalidate()
     view.keyDown(with:key(7,.keyDown,"ㅌ"));view.keyUp(with:key(7,.keyUp,"ㅌ"))
     precondition(root.network.input.pending.map(\.action)==[.charge,.release],"Hangul input state must not alter physical X key")
-    view.keyDown(with:key(8));view.keyDown(with:key(49));view.keyDown(with:key(123))
-    precondition(root.network.input.pending.suffix(2).map(\.action)==[.defend,.jump] && root.network.input.x == -1,"C/Space/arrow combination")
+    view.keyDown(with:key(8));view.keyDown(with:key(49));view.keyDown(with:key(9));view.keyDown(with:key(123))
+    precondition(root.network.input.pending.suffix(3).map(\.action)==[.defend,.jump,.block] && root.network.input.x == -1,"Separate C/Space/V/arrow commands")
     _ = view.resignFirstResponder();precondition(root.network.input.buttons==0 && root.network.input.x==0,"Focus loss must clear held controls")
     for phase:MatchPhase in [.countdown,.playing,.restart,.endingShot] {
         root.screen = .match;root.network.game.phase=phase;root.lostFocus()
@@ -194,6 +212,13 @@ func runLANTransportTests() {
     host.startMatch()
     precondition(wait(5,until:{host.game.phase == .playing && client.latest?.phase == .playing}),"Shared countdown/start")
     precondition(host.game.matchID==client.latest!.matchID && client.localID==1,"Match/assigned player mismatch")
+    client.input.key(9,down:true,tick:client.estimatedTick+2);client.sendInputNow()
+    precondition(wait(2,until:{host.game.players[1].action == .block && (host.game.players[1].air ?? 0)>0.2}),"Remote V must jump-block")
+    let air=host.game.players[1].air!
+    client.input.key(49,down:true,tick:client.estimatedTick+2);client.sendInputNow()
+    precondition(wait(1,until:{host.game.players[1].ackAction>=2 && (host.game.players[1].air ?? 0)>=air}),"Space cannot restart an airborne block")
+    client.input.key(49,down:false,tick:client.estimatedTick+2);client.input.key(9,down:false,tick:client.estimatedTick+2);client.sendInputNow()
+    precondition(wait(2,until:{host.game.players[1].air==nil && host.game.players[1].action == .idle}),"V block must land and recover")
     host.debugDropEvery=4;client.debugDropEvery=4
     let old=host.game.players[1].position
     client.input.key(123,down:true,tick:client.estimatedTick+2);client.sendInputNow()

@@ -52,7 +52,7 @@ enum Facing:String,Codable,CaseIterable {
 }
 
 enum GameAction:String,Codable { case idle,charge,shot,defense,steal,block,dunk,catchBall }
-enum InputAction:String,Codable { case charge,release,jump,dunk,defend }
+enum InputAction:String,Codable { case charge,release,jump,dunk,defend,block }
 struct ActionCommand:Codable,Equatable {
     var id:Int; var tick:Int; var action:InputAction
     enum CodingKeys:String,CodingKey { case id="i",tick="t",action="a" }
@@ -77,7 +77,7 @@ final class InputController {
         y=(keys.contains(125) ? 1 : 0)-(keys.contains(126) ? 1 : 0)
         buttons=(buttons & InputFrame.run) | (keys.contains(7) ? InputFrame.shoot : 0) | (keys.contains(8) ? InputFrame.defend : 0)
         var action:InputAction?
-        if down && !was { action=[7:.charge,49:.jump,6:.dunk,8:.defend][code] }
+        if down && !was { action=[7:.charge,49:.jump,6:.dunk,8:.defend,9:.block][code] }
         if !down && was && code==7 { action = .release }
         if let action, pending.count<12 { nextAction += 1; pending.append(ActionCommand(id:nextAction,tick:tick,action:action)) }
     }

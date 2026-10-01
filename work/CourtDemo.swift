@@ -27,7 +27,7 @@ final class CourtView: NSView {
     var facing: Facing = .down
     var keys = Set<UInt16>()
     var running = false
-    var movementSpeed: CGFloat { action == "defense" ? 2.3 : charging ? 1.75 : running ? 5.6 : 3.5 }
+    var movementSpeed: CGFloat { action == "defense" ? (running ? 5.04 : 3.15) : charging ? 1.75 : running ? 5.6 : 3.5 }
     var player = CGPoint(x: 550, y: 530)
     var ball = CGPoint(x: 836, y: 570)
     var ownsBall = false
@@ -126,6 +126,7 @@ final class CourtView: NSView {
                 else { message = "덩크는 가까운 골대를 바라볼 때 가능합니다" }
             }
         case 8: startDefense()
+        case 9: startBlock()
         case 48: defensePractice.toggle(); reset()
         case 15: reset()
         default: break
@@ -139,18 +140,18 @@ final class CourtView: NSView {
         guard airborne == nil && (action.isEmpty || action == "defense" || charging) else { return }
         takeoffFeet=groundedFeet(); airborne=0; airDuration=jumpDuration
         if charging { message="점프슛 준비 · X를 놓으면 현재 높이에서 발사합니다";return }
-        if keys.contains(8) && !ownsBall {
-            begin("block"); defenseContactUsed=false
-            defenseCooldown=max(defenseCooldown,DefensePhysics.cooldown)
-            message="점프 블로킹 · 공이 손에 닿으면 쳐냅니다"
-        } else { begin("jump") }
+        begin("jump")
+    }
+    func startBlock() {
+        guard !ownsBall && ["","jump","defense"].contains(action) else { return }
+        if airborne == nil { takeoffFeet=groundedFeet();airborne=0;airDuration=jumpDuration }
+        begin("block");defenseContactUsed=false
+        message="V 점프 블로킹 · 공이 손에 닿으면 쳐냅니다"
     }
     func startDefense() {
         guard !ownsBall else { message="공을 소유한 동안에는 수비할 수 없습니다"; return }
         guard defenseCooldown<=0 else { return }
-        if airborne != nil && action == "jump" {
-            begin("block"); message="점프 블로킹 · 공이 손에 닿으면 쳐냅니다"
-        } else if airborne == nil && action.isEmpty {
+        if airborne == nil && action.isEmpty {
             begin("defense"); message="C 수비 · 상대 공에 손을 뻗어 스틸하세요"
         } else { return }
         defenseCooldown=DefensePhysics.cooldown; defenseContactUsed=false
@@ -210,7 +211,7 @@ final class CourtView: NSView {
         if defensePractice {
             player=CGPoint(x:1190,y:530); facing = .left
             ball=opponentBall().screen
-            message="수비 연습 · 상대에게 접근해 C 스틸 / Space + C 블로킹 · Tab 모드 전환"
+            message="수비 연습 · C 수비/스틸 · V 점프 블로킹 · Tab 모드 전환"
         }
     }
     func duration(_ name: String) -> Double {
@@ -325,7 +326,7 @@ final class CourtView: NSView {
         shotPointsByHoop=Hoop.all.indices.map { CourtGeometry.shotPoints(feet:feet,hoopIndex:$0) }
         flight=ShotFlight(startGround:body.ground,startHeight:body.height,endGround:aim.end,distance:aim.distance,points:shotPointsByHoop[aim.index],targetHeight:Hoop.height)
         rebound=nil; ball=body.screen
-        message="상대 슛! Space로 점프한 뒤 C로 블로킹하세요"
+        message="상대 슛! V로 점프 블로킹하세요"
     }
     func updateOpponent(dt:Double) {
         guard defensePractice else { return }
@@ -646,7 +647,7 @@ final class CourtView: NSView {
         }
         NSColor(calibratedWhite:0.10,alpha:1).setFill(); NSRect(x:0,y:941,width:1672,height:99).fill()
         let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:22,weight:.medium),.foregroundColor:NSColor.white]
-        "방향키 이동   Shift 달리기   Space 점프   X 누르고 놓기: 슛   Z 덩크   C 스틸 / 블로킹   Tab 모드   R 초기화".draw(at:NSPoint(x:35,y:958),withAttributes:attrs)
+        "방향키 이동   Shift 달리기   Space 점프   X 슛   Z 덩크   C 수비/스틸   V 점프 블록   Tab 모드   R 초기화".draw(at:NSPoint(x:35,y:958),withAttributes:attrs)
         let status=defensePractice ? "수비 연습 · 나 \(score) : 상대 \(opponentScore) · 스틸 \(steals) / 블록 \(blocks)" : "슛 연습 · \(score)점"
         "\(status) · \(message) · \(updateStatus)".draw(at:NSPoint(x:35,y:997),withAttributes:[.font:NSFont.systemFont(ofSize:17),.foregroundColor:NSColor.lightGray])
     }
@@ -699,10 +700,12 @@ func runDefenseGameplayTests(_ view:CourtView) {
     precondition(view.action.isEmpty && view.ownsBall,"Cannot defend one's own held ball")
     view.ownsBall=false; view.begin("defense"); view.player=CGPoint(x:550,y:600)
     view.running=true; view.keys=[124,8]; view.tick()
-    precondition(abs(view.player.x-552.3)<0.001,"Defensive stance must move slower even with Shift")
+    precondition(abs(view.player.x-555.04)<0.001,"Defensive stance must allow ninety percent Shift speed")
     view.keys.removeAll(); view.running=false
     view.keys=[8]; view.startJump()
-    precondition(view.action=="block" && view.airborne==0,"Holding C then Space must jump-block without releasing stance")
+    precondition(view.action=="jump" && view.airborne==0,"C plus Space is now an ordinary jump")
+    view.airborne=0.3;view.startBlock()
+    precondition(view.action=="block" && view.airborne==0.3,"V must not restart an existing jump")
     view.keys.removeAll()
     for dt in [1.0/60,1.0/120,0.05] {
         for enemyShot in [true,false] {
@@ -730,12 +733,12 @@ func runDefenseGameplayTests(_ view:CourtView) {
         for timing in [0.65,0.75,0.85,0.95] {
             view.clock=0; view.reset()
             while view.opponent.phase != "charge" || view.opponent.elapsed<timing { view.tick(dt:dt) }
-            view.keys=[8]; view.startJump()
+            view.keys=[9]; view.startBlock()
             for _ in 0..<Int(1.5/dt) { view.tick(dt:dt) }
             view.keys.removeAll()
             if view.blocks>0 { naturalBlock=true; break }
         }
-        precondition(naturalBlock,"Normal opponent shot must be blockable with Space+C at \(dt)")
+        precondition(naturalBlock,"Normal opponent shot must be blockable with V at \(dt)")
     }
     view.defensePractice=false; view.keys.removeAll(); view.reset()
 }
@@ -768,7 +771,7 @@ enum Main {
                 for timing in [0.65,0.75,0.85,0.95] {
                     view.clock=0; view.keys.removeAll(); view.reset()
                     while view.opponent.phase != "charge" || view.opponent.elapsed<timing { view.tick() }
-                    view.keys=[8]; view.startJump()
+                    view.keys=[9]; view.startBlock()
                     for _ in 0..<90 { view.tick(); if view.blocks>0 { break } }
                     if view.blocks>0 { break }
                 }
