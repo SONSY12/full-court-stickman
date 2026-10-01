@@ -10,6 +10,10 @@ enum ShotGauge {
         let phase=time.truncatingRemainder(dividingBy:2.2)/1.1
         return phase<=1 ? phase : 2-phase
     }
+    static func isGreen(marker:Double,width:Double)->Bool {
+        marker.isFinite && width.isFinite && width>=0 && width<=1 &&
+        marker>=0.5-width/2 && marker<=0.5+width/2
+    }
 }
 
 struct Clip {
@@ -83,6 +87,8 @@ final class CourtView: NSView {
     var gaugeMarker:Double = 0
     var gaugeFeedback:Double = 0
     var accurateShot = false
+    // Frozen at release; a later lucky bank cannot change a failed timing.
+    var shotCanScore = false
     var flight: ShotFlight?
     var rebound: LooseBall?
     var shotPointsByHoop = [2,2]
@@ -164,7 +170,7 @@ final class CourtView: NSView {
     func releaseCharge() {
         guard charging && ownsBall else { return }
         updateGauge()
-        charging=false; accurateShot=abs(gaugeMarker-0.5)<=gaugeWidth/2
+        charging=false; accurateShot=ShotGauge.isGreen(marker:gaugeMarker,width:gaugeWidth)
         gaugeFeedback=0.8
         begin(airborne != nil ? "jumpShot" : "shot")
         elapsed=duration(action)*0.4
@@ -201,6 +207,7 @@ final class CourtView: NSView {
         airDuration=jumpDuration
         releaseTimeOverride=nil; carriedBall=nil
         charging=false; chargeTime=0; gaugeFeedback=0; accurateShot=false; elapsed=0
+        shotCanScore=false
         shotGroundStart=nil; shotGroundEnd=nil
         goalBall=nil; takeoffFeet=nil; shotPointsByHoop=[2,2]
         pose=CharacterPose.target(action:"",progress:0,airProgress:nil,walking:false,clock:clock)
@@ -232,13 +239,26 @@ final class CourtView: NSView {
         gaugeWidth=ShotGauge.width(distance:distance)
     }
     func awardGoal(_ index:Int,body:LooseBall) {
+        guard shotCanScore else {
+            // Arcade timing rule: reject an accidental entry before it is drawn.
+            var miss=body
+            miss.scoredHoop=nil; miss.rimHits += 1
+            miss.height=Hoop.height+Basketball.radius+3
+            miss.velocity=CGPoint(x:index == 0 ? 180 : -180,y:body.velocity.y*0.35)
+            miss.verticalVelocity=max(180,min(360,abs(body.verticalVelocity)*0.45))
+            flight=nil; goalBall=nil; rebound=miss; ball=miss.screen
+            message="초록 구간 밖 · 슛 실패, 리바운드를 잡으세요"
+            return
+        }
+        shotCanScore=false
         score += shotPointsByHoop[index]
-        goalBall=(body,0); flight=nil; rebound=nil
+        goalBall=(body,0); flight=nil; rebound=nil; ball=body.screen
         message="골! \(shotPointsByHoop[index])점 · 링 통과 확인"
     }
     func launchShot(from start: CGPoint) {
         let ground=CGPoint(x:start.x,y:player.y)
         let aim=aimedHoop(from:ground)
+        shotCanScore=aim.map { accurateShot || (action == "dunk" && $0.distance<=220) } ?? false
         let direction=aim.map { CGPoint(x:($0.end.x-ground.x)/$0.distance,y:($0.end.y-ground.y)/$0.distance) } ?? facing.vector
         var range:CGFloat=aim?.distance ?? 620
         if aim != nil && !accurateShot && action != "dunk" {
@@ -317,7 +337,7 @@ final class CourtView: NSView {
                     break
                 }
                 if let hoop=ShotFlight.crossingHoop(from:previous,to:body) {
-                    awardGoal(hoop,body:body); ball=body.screen; interrupted=true; break
+                    awardGoal(hoop,body:body); interrupted=true; break
                 }
                 previous=body
             }
@@ -333,10 +353,10 @@ final class CourtView: NSView {
             r.step(dt:dt); ball=r.screen
             if let hoop=r.scoredHoop { awardGoal(hoop,body:r) }
             else if r.height<35 && hypot(player.x-r.ground.x,player.y-r.ground.y)<60 && action.isEmpty {
-                ownsBall=true; rebound=nil; message="리바운드 획득"
+                ownsBall=true; rebound=nil; shotCanScore=false; message="리바운드 획득"
             } else { rebound=r }
         } else if !ownsBall && hypot(player.x-ball.x,player.y-ball.y)<70 && action.isEmpty {
-            ownsBall=true; message="공 획득 · X 슛 / Space 점프 / Z 덩크"
+            ownsBall=true; shotCanScore=false; message="공 획득 · X 슛 / Space 점프 / Z 덩크"
         }
         let target=CharacterPose.target(action:action,progress:elapsed/duration(action),airProgress:airborne.map { $0/airDuration },walking:dx != 0 || dy != 0,clock:clock)
         pose.approach(target,dt:dt)
@@ -490,6 +510,12 @@ enum Main {
             precondition(abs(ShotGauge.width(distance:200)-0.32)<0.0001)
             precondition(abs(ShotGauge.width(distance:450)-0.16)<0.0001)
             precondition(abs(ShotGauge.width(distance:650)-0.06)<0.0001)
+            for width in [0.32,0.16,0.06] {
+                for sign in [-1.0,1.0] {
+                    precondition(ShotGauge.isGreen(marker:0.5+sign*width/2,width:width),"Green edge must match the visible window")
+                    precondition(!ShotGauge.isGreen(marker:0.5+sign*(width/2+0.000001),width:width),"Outside green must fail without extra tolerance")
+                }
+            }
             view.ownsBall=true; view.startCharge(); view.tick(dt:0.55)
             precondition(view.charging && view.ownsBall && view.flight == nil)
             view.releaseCharge()
@@ -562,10 +588,46 @@ enum Main {
                     }
                 }
             }
-            view.reset(); view.keys.removeAll(); view.shotPointsByHoop=[3,3]
+            // Even an exact ring-center bank is rejected for failed timing.
+            for (index,hoop) in Hoop.all.enumerated() {
+                for dt in [1.0/60,1.0/120,0.05] {
+                    view.reset(); view.keys.removeAll(); view.accurateShot=true
+                    view.rebound=LooseBall(ground:hoop.center,velocity:.zero,height:260,verticalVelocity:-300,rimHits:1,boardHits:1)
+                    for _ in 0..<Int(6/dt) { view.tick(dt:dt) }
+                    precondition(view.score==0 && view.goalBall == nil && view.ball.x != 836,"Off-green bank must not score or reset")
+                    view.reset(); view.player=CGPoint(x:836,y:530); view.facing=index == 0 ? .left : .right
+                    view.ownsBall=true; view.begin("shot"); view.accurateShot=false
+                    view.launchShot(from:CGPoint(x:836,y:300))
+                    view.ownsBall=false; view.flight=nil; view.accurateShot=true
+                    view.rebound=LooseBall(ground:hoop.center,velocity:.zero,height:260,verticalVelocity:-300)
+                    for _ in 0..<Int(6/dt) { view.tick(dt:dt) }
+                    precondition(view.score==0,"Released failure must not change with mutable gauge state")
+                }
+                for distance:CGFloat in [150,450,900] {
+                    for sign in [-1.0,1.0] {
+                        view.reset(); view.keys.removeAll()
+                        let direction:CGFloat=index == 0 ? -1 : 1
+                        view.player=CGPoint(x:hoop.center.x-direction*distance,y:530)
+                        view.facing=index == 0 ? .left : .right; view.ownsBall=true
+                        view.startCharge(); view.tick(dt:0.4)
+                        view.chargeTime=(0.5+sign*(view.gaugeWidth/2+0.005))*1.1
+                        view.releaseCharge()
+                        precondition(!view.accurateShot && !view.shotCanScore,"Out-of-green release must be ineligible")
+                        for _ in 0..<360 { view.tick() }
+                        precondition(view.score==0 && view.goalBall == nil,"Early/late assisted shots must never score")
+                    }
+                }
+            }
+            view.reset(); view.keys.removeAll(); view.shotPointsByHoop=[3,3]; view.shotCanScore=true
             view.rebound=LooseBall(ground:Hoop.all[0].center,velocity:.zero,height:260,verticalVelocity:-300)
             for _ in 0..<180 { view.tick() }
             precondition(view.score==3 && view.ball.x==836,"A descending rebound scores once and resets")
+            view.reset(); view.player=CGPoint(x:1380,y:530); view.facing = .right
+            view.begin("dunk"); view.accurateShot=false
+            view.launchShot(from:CGPoint(x:1380,y:330))
+            precondition(view.shotCanScore,"Dunk must stay independent of the shot gauge")
+            for _ in 0..<180 { view.tick() }
+            precondition(view.score==2,"Valid dunk must still score")
             view.reset(); view.player=CGPoint(x:650,y:530); view.facing = .left
             view.takeoffFeet=view.groundedFeet(); view.airborne=0.4; view.player.x=450
             view.accurateShot=true; view.launchShot(from:CGPoint(x:450,y:350))
@@ -697,7 +759,7 @@ enum Main {
                     }
                 }
             }
-            print("PASS: physical hoop scoring/no duplicates, near/far and 60/120Hz, release/takeoff feet 2/3 points, aiming, rebounds, gauge and motion")
+            print("PASS: strict green timing/frozen eligibility/no lucky banks, dunks, physics scoring, 2/3 points, aim assist, rebounds and motion")
             return
         }
         app.setActivationPolicy(.regular)
