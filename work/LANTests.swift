@@ -126,7 +126,8 @@ func runLANViewTests() {
 
 /// Real TCP+UDP, two endpoints on this Mac only. This does NOT certify two-Mac Wi-Fi.
 func runLANTransportTests() {
-    let host=NetworkSession(),client=NetworkSession()
+    let host=NetworkSession(),root=GameRootView(frame:NSRect(x:0,y:0,width:840,height:550))
+    let client=root.network;root.screen = .lobby
     host.host(name:"Host Test",room:"Loopback Test",advertise:false)
     func wait(_ seconds:Double,until predicate:()->Bool)->Bool {
         let deadline=Date().addingTimeInterval(seconds)
@@ -136,8 +137,14 @@ func runLANTransportTests() {
     precondition(wait(8,until:{host.tcpPort != nil}),"TCP/UDP listeners failed: \(host.status)")
     precondition(client.direct("127.0.0.1:\(host.tcpPort!)",name:"Client Test"))
     precondition(wait(8,until:{host.udpReady && client.udpReady}),"TCP handshake / UDP binding failed: host=\(host.status), client=\(client.status)")
-    host.setReady();client.setReady()
-    precondition(wait(2,until:{host.ready.allSatisfy{$0}}),"Lobby ready sync")
+    let readyButton=root.buttons[0],menu=root.stack
+    let lobbyTick=client.latest!.tick
+    precondition(wait(1,until:{client.latest!.tick>lobbyTick+20}),"Lobby snapshots not received")
+    precondition(root.buttons[0] === readyButton && root.stack === menu,"Lobby snapshots replaced participant ready button")
+    host.setReady();readyButton.performClick(nil)
+    precondition(wait(2,until:{host.ready.allSatisfy{$0} && client.ready.allSatisfy{$0}}),"Lobby ready sync")
+    precondition(root.buttons[0].title=="준비 취소","Participant ready click was not reflected")
+    root.network.onChange=nil // Remaining checks exercise transport without a live view.
     host.startMatch()
     precondition(wait(5,until:{host.game.phase == .playing && client.latest?.phase == .playing}),"Shared countdown/start")
     precondition(host.game.matchID==client.latest!.matchID && client.localID==1,"Match/assigned player mismatch")

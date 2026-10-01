@@ -136,6 +136,7 @@ final class GameRootView:NSView,NSTextFieldDelegate {
     var address="",room="농구 연습방",updateStatus="업데이트 확인 중…"
     var fieldAlias:NSTextField?,fieldAddress:NSTextField?,fieldRoom:NSTextField?
     var overlayKey=""
+    var lobbyKey=""
     override init(frame:NSRect) {
         super.init(frame:frame);network.onChange={ [weak self] in self?.networkChanged() }
         NotificationCenter.default.addObserver(self,selector:#selector(lostFocus),name:NSWindow.didResignKeyNotification,object:nil)
@@ -147,7 +148,7 @@ final class GameRootView:NSView,NSTextFieldDelegate {
         if screen == .match,let phase=network.latest?.phase,[.countdown,.playing,.restart,.endingShot].contains(phase) { network.pause() }
     }
     override func draw(_ dirtyRect:NSRect) { NSColor(calibratedRed:0.06,green:0.08,blue:0.12,alpha:1).setFill();bounds.fill() }
-    func clearMenu() { stack?.removeFromSuperview();stack=nil;buttons.removeAll();handlers.removeAll();selection=0;fieldAlias=nil;fieldAddress=nil;fieldRoom=nil }
+    func clearMenu() { stack?.removeFromSuperview();stack=nil;lobbyKey="";buttons.removeAll();handlers.removeAll();selection=0;fieldAlias=nil;fieldAddress=nil;fieldRoom=nil }
     func menu(_ title:String,_ subtitle:String,overlay:Bool=false) {
         clearMenu()
         let s=NSStackView();s.orientation = .vertical;s.alignment = .centerX;s.spacing=12;s.translatesAutoresizingMaskIntoConstraints=false;stack=s;addSubview(s)
@@ -194,10 +195,14 @@ final class GameRootView:NSView,NSTextFieldDelegate {
         button("뒤로") { [weak self] in self?.network.stop();self?.showLAN() };focusMenu()
     }
     func showLobby() {
-        screen = .lobby
         let addresses=network.role == .host ? NetworkSession.addresses().prefix(3).map { "\($0):\(network.tcpPort ?? 0)" }.joined(separator:" / ") : ""
         let text="\(network.status)\n\(addresses)\n\(network.names[0]) [\(network.ready[0] ? "준비" : "대기")]   :   \(network.peerPresent ? network.names[1] : "참가자 없음") [\(network.ready[1] ? "준비" : "대기")]\nUDP \(network.udpReady ? "연결 완료" : "연결 대기") · 양쪽 앱/규칙 버전 일치 필요"
+        let key="\(network.localID)|\(network.roomName)|\(text)"
+        // Frequent UDP snapshots must not replace a button between mouse-down/up.
+        if screen == .lobby,stack != nil,lobbyKey==key { return }
+        screen = .lobby
         menu(network.roomName,text)
+        lobbyKey=key
         button(network.ready[network.localID] ? "준비 취소" : "준비") { [weak self] in self?.network.setReady() }
         if network.role == .host { button("경기 시작") { [weak self] in self?.network.startMatch() } }
         button("방 나가기") { [weak self] in self?.showHome() };focusMenu()
