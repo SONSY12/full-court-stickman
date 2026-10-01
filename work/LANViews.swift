@@ -57,8 +57,20 @@ final class LANMatchView:NSView {
         } else { predicted=nil }
         for i in 0..<2 {
             let p=s.players[i].state
-            let progress=p.action == .defense ? 0.5 : p.action == .charge ? p.elapsed/2.16 : p.elapsed/p.actionDuration
+            let localChargeTime=p.chargeTime+(i==local ? max(0,Double(network.estimatedTick-latest.tick)/60) : 0)
+            let progress=p.action == .defense ? 0.5 : p.action == .charge ? ShotGauge.poseProgress(time:localChargeTime) : p.elapsed/p.actionDuration
             poses[i].approach(CharacterPose.target(action:p.poseAction,progress:progress,airProgress:p.air.map{$0/p.airDuration},walking:p.moving,clock:p.gait),dt:dt)
+        }
+        if network.role == .client,latest.ball.owner==local,s.ball.owner==local {
+            // Do not leave the owned ball in the remote interpolation buffer
+            // while its local carrier moves/raises the shooting hand ahead of it.
+            var p=s.players[local].state;p.pose=poses[local]
+            if [.charge,.dunk,.catchBall].contains(p.action) {
+                let held=ActionSystem.held(p);s.ball.ground=held.ground;s.ball.height=held.height
+            } else {
+                s.ball.ground=CGPoint(x:latest.ball.ground.x+p.position.x-latest.players[local].position.x,y:latest.ball.ground.y+p.position.y-latest.players[local].position.y)
+                s.ball.height=latest.ball.height
+            }
         }
         shown=s;camera.update(snapshot:s,local:local,size:CGSize(width:bounds.width,height:max(100,bounds.height-104)),dt:dt);needsDisplay=true
     }
@@ -68,7 +80,7 @@ final class LANMatchView:NSView {
         if [15,48,36].contains(e.keyCode) { return }
         if !e.isARepeat { network.input.key(e.keyCode,down:true,tick:network.estimatedTick+2);network.sendInputNow() }
     }
-    override func keyUp(with e:NSEvent) { network.input.key(e.keyCode,down:false,tick:network.estimatedTick+2);network.sendInputNow() }
+    override func keyUp(with e:NSEvent) { network.input.key(e.keyCode,down:false,tick:network.estimatedTick);network.sendInputNow() }
     override func flagsChanged(with e:NSEvent) { if e.modifierFlags.contains(.shift) { network.input.buttons |= InputFrame.run } else { network.input.buttons &= ~InputFrame.run };network.sendInputNow() }
     override func resignFirstResponder()->Bool { network.input.clear();network.sendInputNow();return true }
     func label(_ text:String,at point:CGPoint,size:CGFloat=16,color:NSColor = .white,width:CGFloat=1000) {
@@ -102,21 +114,27 @@ final class LANMatchView:NSView {
         NSColor.black.withAlphaComponent(0.78).setFill();NSRect(x:12,y:12,width:bounds.width-24,height:62).fill()
         let time=official.overtime ? "연장 · 선득점" : String(format:"%d:%02d",Int(ceil(official.remaining))/60,Int(ceil(official.remaining))%60)
         label("나 \(official.players[local].score) : \(official.players[1-local].score) 상대    \(time)    공격 \(String(format:"%.1f",official.shotClock))초",at:CGPoint(x:26,y:20),size:bounds.width<950 ? 19 : 23,width:bounds.width-50)
-        label("공격 방향 \(local==0 ? "오른쪽 →" : "← 왼쪽")    LAN \(Int(network.rttMS)) ms",at:CGPoint(x:26,y:49),size:13,color:.lightGray,width:bounds.width-50)
+        let pressure=official.players.first(where:{$0.action == .charge}).map { " · \($0.id==local ? "내 슛" : "상대 슛"): \(ShotGauge.contestLabel($0.contest))" } ?? ""
+        label("공격 방향 \(local==0 ? "오른쪽 →" : "← 왼쪽")    LAN \(Int(network.rttMS)) ms\(pressure)",at:CGPoint(x:26,y:49),size:13,color:.lightGray,width:bounds.width-50)
         let p=official.players[local]
-        if p.action == .charge {
-            let aim=ShotAssist.target(from:CGPoint(x:official.ball.ground.x,y:p.position.y),facing:p.facing.vector,hoopIndex:local == 0 ? 1 : 0)
-            let distance=aim?.distance ?? CGFloat(hypot(Double(p.position.x-Hoop.all[local == 0 ? 1 : 0].center.x),Double(p.position.y-530)))
-            let width=ShotGauge.width(distance:distance),marker=ShotGauge.marker(time:p.charge+max(0,Double(network.estimatedTick-official.tick)/60))
+        if p.action == .charge,p.shotWidth>0 {
+            // Show the authority's exact contextual window, not a distance-only or rounded approximation.
+            let width=CGFloat(p.shotWidth),marker=ShotGauge.marker(time:p.charge+max(0,Double(network.estimatedTick-official.tick)/60))
             let x=viewport.midX+(p.position.x-camera.center.x)*camera.scale
             let top=official.players.filter { abs($0.position.x-p.position.x)<250 }.map { $0.position.y-290-$0.state.jumpHeight }.min() ?? p.position.y-250-p.state.jumpHeight
             let y=viewport.midY+(top-camera.center.y)*camera.scale
-            let rect=NSRect(x:max(8,min(bounds.width-218,x-105)),y:max(82,min(viewport.maxY-30,y)),width:210,height:15)
-            NSColor.black.setFill();rect.insetBy(dx:-3,dy:-3).fill();NSGradient(colors:[.red,.orange,.yellow,.orange,.red])!.draw(in:rect,angle:0);NSColor.systemGreen.setFill();NSRect(x:rect.midX-rect.width*width/2,y:rect.minY,width:rect.width*width,height:rect.height).fill();NSColor.white.setFill();NSRect(x:rect.minX+rect.width*marker-1.5,y:rect.minY-3,width:3,height:21).fill()
+            let rect=NSRect(x:max(8,min(bounds.width-218,x-105)),y:max(82,min(viewport.maxY-48,y)),width:210,height:15)
+            NSColor.black.withAlphaComponent(0.86).setFill();NSRect(x:rect.minX-4,y:rect.minY-4,width:rect.width+8,height:43).fill()
+            NSGradient(colors:[.red,.orange,.yellow,.orange,.red])!.draw(in:rect,angle:0);NSColor.systemGreen.setFill();NSRect(x:rect.midX-rect.width*width/2,y:rect.minY,width:rect.width*width,height:rect.height).fill();NSColor.white.setFill();NSRect(x:rect.minX+rect.width*marker-1.5,y:rect.minY-3,width:3,height:21).fill()
+            let accurate=ShotGauge.isGreen(marker:marker,width:p.shotWidth)
+            let feedback="\(ShotGauge.timingLabel(marker:marker,width:p.shotWidth)) · \(ShotGauge.contestLabel(p.contest))\(p.moving ? " · 이동" : "")"
+            label(feedback,at:CGPoint(x:rect.minX+2,y:rect.maxY+5),size:11,color:accurate ? .systemGreen : .white,width:rect.width-4)
         }
         NSColor(calibratedWhite:0.08,alpha:1).setFill();NSRect(x:0,y:viewport.maxY,width:bounds.width,height:104).fill()
-        label("방향키 이동 · Shift 달리기 · X 누르고 놓기 슛 · Z 덩크\nSpace 점프 · C 수비 / 스틸 · V 점프 블록 · Esc 일시정지",at:CGPoint(x:16,y:viewport.maxY+10),size:14,width:bounds.width-32)
-        label("\(official.event.kind) · 스틸 \(p.steals) / 블록 \(p.blocks) / 리바운드 \(p.rebounds)",at:CGPoint(x:16,y:viewport.maxY+64),size:14,color:.lightGray,width:bounds.width-32)
+        label("방향키 이동 · Shift 달리기 · X 누르고 놓기 슛 · Z 덩크",at:CGPoint(x:16,y:viewport.maxY+10),size:14,width:bounds.width-32)
+        label("Space 점프 · C 누르기 유지: 손 올림 · B 스틸 · V 점프 블록 · Esc 일시정지",at:CGPoint(x:16,y:viewport.maxY+33),size:14,width:bounds.width-32)
+        let actor=official.event.player.map { $0==local ? "나: " : "상대: " } ?? ""
+        label("\(actor)\(official.event.kind) · 스틸 \(p.steals) / 블록 \(p.blocks) / 리바운드 \(p.rebounds)",at:CGPoint(x:16,y:viewport.maxY+67),size:13,color:.lightGray,width:bounds.width-32)
         if [.countdown,.restart,.endingShot].contains(official.phase) {
             let title=official.phase == .countdown ? "\(max(1,Int(ceil(3-official.phaseTime))))" : official.phase == .restart ? "중앙 재개" : "마지막 슛 확인 중"
             label(title,at:CGPoint(x:bounds.midX-150,y:viewport.midY-40),size:42,width:350)
@@ -213,7 +231,7 @@ final class GameRootView:NSView,NSTextFieldDelegate {
         view.exitToMenu={ [weak self] in self?.showHome() };practice=view;addSubview(view);window?.makeFirstResponder(view)
     }
     func showHelp() {
-        screen = .help;menu("조작 안내","방향키 이동 · Shift 달리기 · X 누르고 놓기 슛\nSpace 일반 점프 · Z 덩크 · C 지상 수비/스틸 · V 점프 블록\n수비 이동/달리기: 일반 속도의 90% · C+Shift 허용\n공중에서 V: 체공 시간을 유지한 채 블록 자세로 연결\n대전 중 Esc: 전체 일시정지 요청 · 준비 후 방장이 재개\n방장: 오른쪽 공격 / 참가자: 왼쪽 공격\n3분 경기 · 14초 공격 제한 · 동점은 선득점 연장\n연습에서만 R 초기화 / Tab 모드 전환 · Command-Q 종료\n메뉴: ↑↓ 선택 / Return 실행 · Tab으로 입력칸 선택")
+        screen = .help;menu("조작 안내","방향키 이동 · Shift 달리기 · X 누르고 놓기 슛\nX 게이지는 한 번만 진행: 초록에서 놓기 · 지나치면 실패\n거리·이동·손 올린 수비 견제에 따라 초록 구간 변화\nSpace 일반 점프 · Z 덩크 · C 유지: 상대를 보고 손 올림\nB 스틸 (손이 공에 닿아야 성공) · V 점프 블록\n수비 이동/달리기: 일반 속도의 90% · C+Shift 허용\n공중에서 V: 체공 시간을 유지한 채 블록 자세로 연결\n대전 중 Esc: 전체 일시정지 요청 · 준비 후 방장이 재개\n방장: 오른쪽 공격 / 참가자: 왼쪽 공격\n3분 경기 · 14초 공격 제한 · 동점은 선득점 연장\n연습에서만 R 초기화 / Tab 모드 전환 · Command-Q 종료\n메뉴: ↑↓ 선택 / Return 실행 · Tab으로 입력칸 선택")
         button("시작 메뉴") { [weak self] in self?.showHome() };focusMenu()
     }
     func networkChanged() {

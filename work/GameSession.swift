@@ -13,6 +13,9 @@ struct PlayerState {
     var air:Double?
     var airDuration:Double=0.9
     var chargeTime:Double=0
+    var shotWidth:Double=0
+    var contest:Double=0
+    var shotSamples:[(tick:Int,width:Double,contest:Double)]=[]
     var cooldown:Double=0
     var reach:CGFloat=0
     var contactUsed=false
@@ -35,7 +38,7 @@ struct PlayerState {
         switch action { case .shot:return 0.75; case .steal:return 0.45; case .block:return 0.9; case .dunk:return 1.1; case .catchBall:return 0.25; default:return 1.6 }
     }
     var poseAction:String {
-        switch action { case .idle:return air == nil ? "" : "jump"; case .shot:return air == nil ? "shot" : "jumpShot"; case .steal:return "defense"; case .catchBall:return "charge"; default:return action.rawValue }
+        switch action { case .idle:return air == nil ? "" : "jump"; case .shot:return air == nil ? "shot" : "jumpShot"; case .defense:return "handsUp"; case .catchBall:return "charge"; default:return action.rawValue }
     }
     var speed:CGFloat {
         if [.defense,.steal].contains(action) { return (input?.buttons ?? 0)&InputFrame.run != 0 ? 302.4 : 189 }
@@ -75,11 +78,12 @@ enum ActionSystem {
 }
 
 struct PlayerPacket:Codable {
+    var shotWidth:Double;var contest:Double
     var moving:Bool
     var id:Int; var position:CGPoint; var facing:Facing; var action:GameAction; var elapsed:Double; var air:Double?; var airDuration:Double; var charge:Double; var reach:CGFloat; var gait:Double; var score:Int; var steals:Int; var blocks:Int; var rebounds:Int; var ackSeq:Int; var ackAction:Int
-    enum CodingKeys:String,CodingKey { case moving="w",id="i",position="p",facing="f",action="a",elapsed="e",air="h",airDuration="d",charge="c",reach="r",gait="g",score="s",steals="v",blocks="b",rebounds="u",ackSeq="q",ackAction="k" }
-    init(_ p:PlayerState) { moving=p.moving;id=p.id;position=wirePoint(p.position);facing=p.facing;action=p.action;elapsed=wireNumber(p.elapsed);air=p.air.map(wireNumber);airDuration=wireNumber(p.airDuration);charge=wireNumber(p.chargeTime);reach=CGFloat(wireNumber(Double(p.reach)));gait=wireNumber(p.gait);score=p.score;steals=p.steals;blocks=p.blocks;rebounds=p.rebounds;ackSeq=p.ackSeq;ackAction=p.ackAction }
-    var state:PlayerState { var p=PlayerState(id:id,position:position,facing:facing);p.action=action;p.elapsed=elapsed;p.air=air;p.airDuration=airDuration;p.chargeTime=charge;p.reach=reach;p.gait=gait;p.moving=moving;return p }
+    enum CodingKeys:String,CodingKey { case shotWidth="n",contest="j",moving="w",id="i",position="p",facing="f",action="a",elapsed="e",air="h",airDuration="d",charge="c",reach="r",gait="g",score="s",steals="v",blocks="b",rebounds="u",ackSeq="q",ackAction="k" }
+    init(_ p:PlayerState) { shotWidth=p.shotWidth;contest=p.contest;moving=p.moving;id=p.id;position=wirePoint(p.position);facing=p.facing;action=p.action;elapsed=wireNumber(p.elapsed);air=p.air.map(wireNumber);airDuration=wireNumber(p.airDuration);charge=p.chargeTime;reach=CGFloat(wireNumber(Double(p.reach)));gait=wireNumber(p.gait);score=p.score;steals=p.steals;blocks=p.blocks;rebounds=p.rebounds;ackSeq=p.ackSeq;ackAction=p.ackAction }
+    var state:PlayerState { var p=PlayerState(id:id,position:position,facing:facing);p.action=action;p.elapsed=elapsed;p.air=air;p.airDuration=airDuration;p.chargeTime=charge;p.shotWidth=shotWidth;p.contest=contest;p.reach=reach;p.gait=gait;p.moving=moving;return p }
 }
 struct BallPacket:Codable {
     var owner:Int?; var shooter:Int?; var ground:CGPoint; var height:CGFloat
@@ -98,7 +102,7 @@ struct MatchSnapshot:Codable {
               remaining.isFinite,remaining>=0,remaining<=180,shotClock.isFinite,shotClock>=0,shotClock<=14,
               phaseTime.isFinite,ball.height.isFinite,abs(ball.height)<10000,ball.ground.x.isFinite,ball.ground.y.isFinite,
               ball.owner == nil || [0,1].contains(ball.owner!),ball.shooter == nil || [0,1].contains(ball.shooter!),event.kind.utf8.count<=160 else { return false }
-        return players.allSatisfy { $0.position.x.isFinite && $0.position.y.isFinite && abs($0.position.x)<3000 && abs($0.position.y)<2000 && $0.elapsed.isFinite && $0.charge.isFinite && $0.reach.isFinite && $0.gait.isFinite && $0.airDuration>0 && $0.airDuration<=2.2 && ($0.air?.isFinite ?? true) && $0.score>=0 && $0.ackSeq>=0 && $0.ackAction>=0 }
+        return players.allSatisfy { $0.position.x.isFinite && $0.position.y.isFinite && abs($0.position.x)<3000 && abs($0.position.y)<2000 && $0.elapsed.isFinite && $0.charge.isFinite && $0.shotWidth.isFinite && (0...1).contains($0.shotWidth) && $0.contest.isFinite && (0...1).contains($0.contest) && $0.reach.isFinite && $0.gait.isFinite && $0.airDuration>0 && $0.airDuration<=2.2 && ($0.air?.isFinite ?? true) && $0.score>=0 && $0.ackSeq>=0 && $0.ackAction>=0 }
     }
 }
 
@@ -177,16 +181,38 @@ final class GameSession {
         let origin=CGPoint(x:owner == id ? body.ground.x : players[id].position.x,y:players[id].position.y)
         return ShotAssist.target(from:origin,facing:players[id].facing.vector,hoopIndex:players[id].attackHoop)
     }
-    func execute(_ command:ActionCommand,player id:Int) {
+    func shotContext(_ id:Int)->(width:Double,contest:Double) {
+        let defender=players[1-id]
+        var pressure:Double=0
+        if [.defense,.block].contains(defender.action) && owner != defender.id {
+            pressure=DefensePhysics.contest(shooter:DefenseHand(ground:body.ground,height:body.height),defender:defender.position,facing:defender.facing.vector,hands:ActionSystem.hands(defender))
+            // A trailing defender has less influence than one in the shooting lane.
+            let direction=players[id].facing.vector
+            let delta=CGPoint(x:defender.position.x-players[id].position.x,y:defender.position.y-players[id].position.y)
+            if delta.x*direction.x+delta.y*direction.y<0 { pressure *= 0.35 }
+        }
+        return (ShotGauge.width(distance:aimed(id)?.distance ?? 620,moving:players[id].moving,contest:pressure),pressure)
+    }
+    func execute(_ command:ActionCommand,player id:Int,completedTick:Int?=nil) {
         guard phase == .playing else { return }
         switch command.action {
         case .charge:
-            if owner==id && [.idle,.catchBall].contains(players[id].action) { players[id].action = .charge;players[id].elapsed=0;players[id].chargeTime=0 }
+            if owner==id && [.idle,.catchBall].contains(players[id].action) {
+                players[id].action = .charge;players[id].elapsed=0;players[id].chargeTime=0
+                players[id].shotSamples.removeAll()
+                let context=shotContext(id);players[id].shotWidth=context.width;players[id].contest=context.contest
+            }
         case .release:
             if owner==id && players[id].action == .charge {
-                let approvedTick=max(tick-6,min(tick,command.tick))
-                let marker=ShotGauge.marker(time:max(0,players[id].chargeTime-Double(tick-approvedTick)/60))
-                launch(id,marker:marker,dunk:false)
+                // A queued command runs before this step advances chargeTime.
+                // Evaluate the key-up's original tick, not the scheduling tick.
+                let reference=completedTick ?? tick
+                let approvedTick=max(reference-6,min(tick,command.tick))
+                let marker=ShotGauge.marker(time:max(0,players[id].chargeTime+Double(approvedTick-reference)/60))
+                // Delayed key-up must also use that tick's server-owned window,
+                // not a wider window after the defender/movement has changed.
+                let sample=players[id].shotSamples.last(where:{$0.tick==approvedTick})
+                launch(id,marker:marker,dunk:false,context:sample.map { ($0.width,$0.contest) })
             }
         case .jump:
             if players[id].air == nil && [.idle,.defense,.steal,.charge,.catchBall].contains(players[id].action) {
@@ -200,16 +226,22 @@ final class GameSession {
         case .dunk:
             if owner==id && players[id].action == .idle && (aimed(id)?.distance ?? .infinity)<=220 { players[id].takeoffFeet=ActionSystem.feet(players[id]);players[id].action = .dunk;players[id].elapsed=0;players[id].air=0;players[id].airDuration=1.1 }
         case .defend:
-            if owner != id && players[id].air == nil && players[id].cooldown<=0 && [.idle,.defense,.steal].contains(players[id].action) {
-                players[id].action = .steal;players[id].elapsed=0;players[id].contactUsed=false;players[id].cooldown=0.7
+            if owner != id && [.idle,.defense].contains(players[id].action) {
+                players[id].action = .defense;players[id].elapsed=0
+            }
+        case .steal:
+            if owner != id && players[id].air == nil && players[id].cooldown<=0 && [.idle,.defense].contains(players[id].action) {
+                players[id].action = .steal;players[id].elapsed=0;players[id].contactUsed=false;players[id].cooldown=DefensePhysics.cooldown
             }
         }
     }
-    func launch(_ id:Int,marker:Double,dunk:Bool) {
+    func launch(_ id:Int,marker:Double,dunk:Bool,context savedContext:(width:Double,contest:Double)?=nil) {
         let aim=aimed(id)
         if dunk && (aim?.distance ?? .infinity)>220 { players[id].action = .idle;emit("덩크 취소",player:id);return }
         let p=players[id],start=body.ground
-        canScore=aim != nil && (dunk || ShotGauge.isGreen(marker:marker,width:ShotGauge.width(distance:aim!.distance)))
+        let context=savedContext ?? shotContext(id)
+        players[id].shotWidth=context.width;players[id].contest=context.contest
+        canScore=aim != nil && (dunk || ShotGauge.isGreen(marker:marker,width:context.width))
         let direction=aim.map { CGPoint(x:($0.end.x-start.x)/$0.distance,y:($0.end.y-start.y)/$0.distance) } ?? p.facing.vector
         var range=aim?.distance ?? 620
         if aim != nil && !canScore { range=max(20,range+(marker<0.5 ? -1 : 1)*max(65,range*CGFloat(abs(marker-0.5))*0.5)) }
@@ -218,7 +250,8 @@ final class GameSession {
         flight=ShotFlight(startGround:start,startHeight:body.height,endGround:end,distance:range,points:points,targetHeight:aim != nil ? Hoop.height : 0)
         owner=nil;shooter=id;lastTouch=id;pendingShot=true
         players[id].action = dunk ? .dunk : .shot;players[id].elapsed=dunk ? players[id].elapsed : 0.3
-        emit(dunk ? "덩크" : canScore ? "초록 타이밍" : "타이밍 실패",player:id)
+        let feedback=aim == nil ? "방향 빗나감" : "\(ShotGauge.contestLabel(context.contest)) · \(ShotGauge.timingLabel(marker:marker,width:context.width))"
+        emit(dunk ? "덩크" : feedback,player:id)
     }
     func goal(_ hoop:Int) {
         guard let shooter,canScore,hoop==players[shooter].attackHoop else {
@@ -259,13 +292,13 @@ final class GameSession {
         for id in 0..<2 {
             if tick-players[id].inputAt>18 { players[id].input=nil;if players[id].action == .charge { players[id].action = .idle } }
             while let command=players[id].queued.first,command.id==players[id].ackAction+1,command.tick<=tick {
-                players[id].queued.removeFirst();players[id].ackAction=command.id;execute(command,player:id)
+                players[id].queued.removeFirst();players[id].ackAction=command.id;execute(command,player:id,completedTick:tick-1)
             }
             var p=players[id]
             p.cooldown=max(0,p.cooldown-dt);p.elapsed += dt
             if p.action == .charge { p.chargeTime += dt }
             if let air=p.air { p.air=air+dt;if p.air!>=p.airDuration { p.air=nil;p.takeoffFeet=nil } }
-            if [.shot,.steal,.block,.catchBall].contains(p.action),p.elapsed>=p.actionDuration { p.action=(p.input?.buttons ?? 0)&InputFrame.defend != 0 && owner != id ? .defense : .idle;p.elapsed=0 }
+            if [.shot,.steal,.block,.catchBall,.dunk].contains(p.action),p.elapsed>=p.actionDuration { p.action=(p.input?.buttons ?? 0)&InputFrame.defend != 0 && owner != id ? .defense : .idle;p.elapsed=0 }
             if p.action == .defense && (p.input?.buttons ?? 0)&InputFrame.defend == 0 { p.action = .idle;p.elapsed=0 }
             if p.action == .idle && p.air == nil && owner != id && (p.input?.buttons ?? 0)&InputFrame.defend != 0 { p.action = .defense;p.elapsed=0 }
             if [.defense,.steal,.block].contains(p.action),owner != id {
@@ -278,9 +311,9 @@ final class GameSession {
                 let distance=p.speed*CGFloat(dt);p.position.x += dx/length*distance;p.position.y += dy/length*distance;p.gait += Double(distance)/105
             }
             if owner==id { p.dribble += dt }
-            let progress=p.action == .defense ? 0.5 : p.action == .charge ? p.elapsed/2.16 : p.elapsed/p.actionDuration
+            let progress=p.action == .defense ? 0.5 : p.action == .charge ? ShotGauge.poseProgress(time:p.chargeTime) : p.elapsed/p.actionDuration
             p.pose.approach(CharacterPose.target(action:p.poseAction,progress:progress,airProgress:p.air.map { $0/p.airDuration },walking:length>0,clock:p.gait),dt:dt)
-            p.reach += (([.defense,.steal].contains(p.action) ? 1 : 0)-p.reach)*CGFloat(1-exp(-dt/0.055))
+            p.reach += ((p.action == .steal ? 1 : 0)-p.reach)*CGFloat(1-exp(-dt/0.055))
             ActionSystem.clamp(&p);players[id]=p
         }
         let dx=players[1].position.x-players[0].position.x,dy=(players[1].position.y-players[0].position.y)*Hoop.groundDepthScale,distance=sqrt(dx*dx+dy*dy)
@@ -299,6 +332,11 @@ final class GameSession {
                 players[defender].contactUsed=true;players[defender].steals += 1;grant(defender,rebound:false);players[defender].action = .catchBall;emit("스틸",player:defender)
             } else if p.action == .block { /* Owned balls are never blocked. */ }
             if self.owner==owner && players[owner].action == .dunk && players[owner].elapsed>=0.605 { launch(owner,marker:0.5,dunk:true) }
+            if self.owner==owner && players[owner].action == .charge {
+                let context=shotContext(owner);players[owner].shotWidth=context.width;players[owner].contest=context.contest
+                players[owner].shotSamples.append((tick,context.width,context.contest))
+                if players[owner].shotSamples.count>8 { players[owner].shotSamples.removeFirst(players[owner].shotSamples.count-8) }
+            }
         } else if var f=flight {
             let old=f.time;f.time += dt;var previous=f.sample(at:old);var interrupted=false
             for index in 1...8 {

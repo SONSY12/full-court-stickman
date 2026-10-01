@@ -3,7 +3,7 @@ import Network
 import Darwin
 
 enum LANProtocol {
-    static let version=1,rules=3
+    static let version=1,rules=4
     static let content="stickman-lan-1"
     static let service="_fullcourt._tcp"
     static let maxControl=8192,maxDatagram=1400
@@ -150,6 +150,7 @@ final class NetworkSession {
     private var lastPeer=ProcessInfo.processInfo.systemUptime,connectedAt=ProcessInfo.processInfo.systemUptime,lostAt:Double?
     private var timer:Timer?,lastStep=ProcessInfo.processInfo.systemUptime,accumulator:Double=0,lastPing:Double=0
     private var lastSentEvent=0,sentPackets=0,leaving=false,connecting=false,reconnectAt:Double=0
+    private var clientHelloSent=false
     init() {
         timer=Timer(timeInterval:1/60,repeats:true) { [weak self] _ in self?.pump() }
         RunLoop.main.add(timer!,forMode:.common)
@@ -157,7 +158,9 @@ final class NetworkSession {
     deinit { timer?.invalidate() }
     func changed() { onChange?() }
     func stop() {
-        leaving=true;wire?.send(LANControl(kind:.leave));wire?.onClose=nil;wire?.close();wire=nil
+        leaving=true
+        if peerPresent && role == .host || role == .client && clientHelloSent { wire?.send(LANControl(kind:.leave)) }
+        wire?.onClose=nil;wire?.close();wire=nil;clientHelloSent=false
         pendingWire?.onClose=nil;pendingWire?.close();pendingWire=nil
         listener?.cancel();udpListener?.cancel();browser?.cancel();udp?.cancel();candidates.forEach { $0.cancel() };candidates.removeAll()
         listener=nil;udpListener=nil;browser=nil;udp=nil;role = .idle;peerPresent=false;udpReady=false;ready=[false,false];tcpPort=nil;udpPort=nil;token="";peerIdentity="";lostAt=nil;connecting=false;clientEndpoint=nil
@@ -221,10 +224,10 @@ final class NetworkSession {
         join(.hostPort(host:NWEndpoint.Host(String(parts[0])),port:NWEndpoint.Port(rawValue:p)!),name:name);return true
     }
     private func connectClient() {
-        guard role == .client,!connecting,let endpoint=clientEndpoint else { return };connecting=true;connectedAt=ProcessInfo.processInfo.systemUptime
+        guard role == .client,!connecting,let endpoint=clientEndpoint else { return };connecting=true;clientHelloSent=false;connectedAt=ProcessInfo.processInfo.systemUptime
         let connection=NWConnection(to:endpoint,using:.tcp),w=TCPWire(connection,queue:queue);wire=w
-        w.onReady={ [weak self,weak w] in guard let self else { return };var hello=LANControl(kind:.hello);hello.identity=self.identity;hello.playerID=1;hello.name=self.clientName;hello.token=self.token;w?.send(hello) }
-        w.onMessage={ [weak self] message in self?.clientControl(message) }
+        w.onReady={ [weak self,weak w] in guard let self,let w,self.wire === w else { return };var hello=LANControl(kind:.hello);hello.identity=self.identity;hello.playerID=1;hello.name=self.clientName;hello.token=self.token;w.send(hello);self.clientHelloSent=true }
+        w.onMessage={ [weak self,weak w] message in guard let self,let w,self.wire === w else { return };self.clientControl(message) }
         w.onClose={ [weak self,weak w] in guard let self,self.wire === w,!self.leaving else { return };self.wire=nil;self.connecting=false;self.connectionLost();if let problem=w?.problem { self.status=problem;self.changed() } }
         w.start()
     }
@@ -329,7 +332,10 @@ final class NetworkSession {
         }
     }
     private func sendLobby() { var m=LANControl(kind:.lobby);m.names=names;m.ready=ready;wire?.send(m) }
-    func setReady() { ready[localID].toggle();if role == .host { sendLobby() } else { var m=LANControl(kind:.ready);m.flag=ready[1];wire?.send(m) };changed() }
+    func setReady() {
+        guard peerPresent && udpReady else { status="상대 참가와 UDP 연결이 완료된 후 준비해 주세요";changed();return }
+        ready[localID].toggle();if role == .host { sendLobby() } else { var m=LANControl(kind:.ready);m.flag=ready[1];wire?.send(m) };changed()
+    }
     func startMatch() {
         guard role == .host,wire != nil,udpReady,ready.allSatisfy({$0}) else { status="두 사람 준비와 UDP 연결 완료 후 시작할 수 있습니다";changed();return }
         if game.phase == .paused { game.resume() }
@@ -352,7 +358,7 @@ final class NetworkSession {
     }
     private func connectionLost() {
         guard role != .idle,!leaving else { return }
-        input.clear();udp?.cancel();udp=nil;udpReady=false;ready=[false,false]
+        input.clear();clientHelloSent=false;udp?.cancel();udp=nil;udpReady=false;ready=[false,false]
         if role == .host { game.pause() }
         if lostAt==nil { lostAt=ProcessInfo.processInfo.systemUptime };reconnectAt=ProcessInfo.processInfo.systemUptime+1
         status="연결 끊김 · 최대 10초 재연결 대기";changed()
@@ -385,7 +391,11 @@ final class NetworkSession {
                 if game.event.id>lastSentEvent { lastSentEvent=game.event.id;var m=LANControl(kind:.event);m.event=game.event;wire?.send(m) }
             } else if !udpReady,udp != nil { sendUDP(LANDatagram(token:token,kind:"probe")) }
         }
-        if now-lastPing>1 { lastPing=now;if udpReady { sendUDP(LANDatagram(token:token,kind:"ping",stamp:now)) } else { var ping=LANControl(kind:.ping);ping.stamp=now;wire?.send(ping) } }
+        if now-lastPing>1 {
+            lastPing=now
+            if udpReady { sendUDP(LANDatagram(token:token,kind:"ping",stamp:now)) }
+            else if peerPresent && (role == .host || clientHelloSent) { var ping=LANControl(kind:.ping);ping.stamp=now;wire?.send(ping) }
+        }
     }
     func disconnectForTest() { wire?.close() }
 }

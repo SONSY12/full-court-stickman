@@ -1,7 +1,8 @@
 import Foundation
 
 enum ShotGauge {
-    static func width(distance:CGFloat)->Double {
+    static let duration=1.1
+    static func baseWidth(distance:CGFloat)->Double {
         if distance<=200 { return 0.32 }
         if distance<=450 { return 0.32-Double((distance-200)/250)*0.16 }
         if distance<=650 { return 0.16-Double((distance-450)/200)*0.10 }
@@ -9,9 +10,20 @@ enum ShotGauge {
         if distance<=1000 { return 0.03-Double((distance-750)/250)*0.015 }
         return 0.015 // Do not shrink below one 60Hz timing step.
     }
+    static func width(distance:CGFloat,moving:Bool=false,contest:Double=0)->Double {
+        let pressure=contest.isFinite ? max(0,min(1,contest)) : 0
+        return max(0.015,baseWidth(distance:distance)*(moving ? 0.75 : 1)*(1-0.65*pressure))
+    }
     static func marker(time:Double)->Double {
-        let phase=time.truncatingRemainder(dividingBy:2.2)/1.1
-        return phase<=1 ? phase : 2-phase
+        guard time.isFinite else { return 1 }
+        return max(0,min(1,time/duration))
+    }
+    // The gathering hand reaches its release pose at the meter's center.
+    static func poseProgress(time:Double)->Double { 0.32*max(0,min(1,time/(duration/2))) }
+    static func contestLabel(_ contest:Double)->String { contest>=0.65 ? "강한 견제" : contest>=0.2 ? "약한 견제" : "노마크" }
+    static func timingLabel(marker:Double,width:Double)->String {
+        if isGreen(marker:marker,width:width) { return "정확" }
+        return marker<0.5 ? "빠름" : "늦음"
     }
     static func isGreen(marker:Double,width:Double)->Bool {
         marker.isFinite && width.isFinite && width>=0 && width<=1 && marker>=0.5-width/2 && marker<=0.5+width/2
@@ -52,7 +64,7 @@ enum Facing:String,Codable,CaseIterable {
 }
 
 enum GameAction:String,Codable { case idle,charge,shot,defense,steal,block,dunk,catchBall }
-enum InputAction:String,Codable { case charge,release,jump,dunk,defend,block }
+enum InputAction:String,Codable { case charge,release,jump,dunk,defend,steal,block }
 struct ActionCommand:Codable,Equatable {
     var id:Int; var tick:Int; var action:InputAction
     enum CodingKeys:String,CodingKey { case id="i",tick="t",action="a" }
@@ -77,7 +89,7 @@ final class InputController {
         y=(keys.contains(125) ? 1 : 0)-(keys.contains(126) ? 1 : 0)
         buttons=(buttons & InputFrame.run) | (keys.contains(7) ? InputFrame.shoot : 0) | (keys.contains(8) ? InputFrame.defend : 0)
         var action:InputAction?
-        if down && !was { action=[7:.charge,49:.jump,6:.dunk,8:.defend,9:.block][code] }
+        if down && !was { action=[7:.charge,49:.jump,6:.dunk,8:.defend,11:.steal,9:.block][code] }
         if !down && was && code==7 { action = .release }
         if let action, pending.count<12 { nextAction += 1; pending.append(ActionCommand(id:nextAction,tick:tick,action:action)) }
     }

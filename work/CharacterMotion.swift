@@ -20,14 +20,15 @@ struct CharacterPose {
         if ["shot","jumpShot"].contains(action) { lift=smooth(t/0.32)*(1-recovery) }
         if action == "charge" { lift=smooth(t/0.32) }
         if action == "block" { lift=smooth(t/0.16)*(1-smooth((t-0.82)/0.16)) }
+        if action == "handsUp" { lift=1 }
         if action == "dunk" { lift=smooth((t-0.12)/0.22)*(1-smooth((t-0.66)/0.25)) }
-        let defense=action == "defense" ? smooth(t/0.2)*(1-smooth((t-0.72)/0.22)) : 0
+        let defense=["defense","steal"].contains(action) ? smooth(t/0.2)*(1-smooth((t-0.72)/0.22)) : 0
         crouch += 12*defense
         let offset=crouch+bob
         func mix(_ a:CGFloat,_ b:CGFloat,_ f:CGFloat)->CGFloat { a+(b-a)*f }
         var le=CGPoint(x:198,y:388), lh=CGPoint(x:165,y:449)
         var re=CGPoint(x:314,y:388), rh=CGPoint(x:347,y:449)
-        if action == "block" {
+        if action == "block" || action == "handsUp" {
             le=CGPoint(x:mix(198,125,lift),y:mix(388,205,lift)); lh=CGPoint(x:mix(165,155,lift),y:mix(449,25,lift))
             re=CGPoint(x:mix(314,387,lift),y:mix(388,205,lift)); rh=CGPoint(x:mix(347,357,lift),y:mix(449,25,lift))
         } else if action == "dunk" {

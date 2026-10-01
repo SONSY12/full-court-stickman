@@ -20,6 +20,23 @@ enum DefensePhysics {
         return distance<1 || dx*facing.x+dy*facing.y >= -distance*0.15
     }
 
+    // Hands-up pressure is spatial, not a random accuracy roll. A hand at a
+    // different court depth or far below the release point cannot contest it.
+    static func contest(shooter:DefenseHand,defender:CGPoint,facing:CGPoint,hands:[DefenseHand])->Double {
+        guard inFront(ball:shooter.ground,defender:defender,facing:facing) else { return 0 }
+        return hands.map { hand in
+            let dx=hand.ground.x-shooter.ground.x
+            let dy=(hand.ground.y-shooter.ground.y)*Hoop.groundDepthScale
+            let horizontal=hypot(dx,dy)
+            let vertical=abs(hand.height-shooter.height)
+            // Close hands at release height strongly contest; ordinary low
+            // dribbling/reaching hands and distant players do not.
+            let distance=max(0,min(1,(150-horizontal)/100))
+            let height=max(0,min(1,(95-vertical)/60))
+            return Double(distance*height)
+        }.max() ?? 0
+    }
+
     // Sweep relative motion, so neither a fast shot nor a moving hand tunnels.
     static func contact(from:LooseBall,to:LooseBall,hands:[DefenseHand],previousHands:[DefenseHand]? = nil,radius:CGFloat=DefensePhysics.contactRadius)->Int? {
         for i in hands.indices {
