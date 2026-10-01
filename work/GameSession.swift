@@ -29,10 +29,10 @@ struct PlayerState {
     var attackHoop:Int { id == 0 ? 1 : 0 }
     var jumpHeight:CGFloat {
         guard let air else { return 0 }; let t=air/airDuration
-        return CGFloat(t>0.2 && t<0.8 ? 45*sin(.pi*(t-0.2)/0.6) : 0)
+        return JumpMotion.height(progress:t)
     }
     var actionDuration:Double {
-        switch action { case .shot:return 0.75; case .steal:return 0.4; case .block:return 0.75; case .dunk:return 1.1; case .catchBall:return 0.25; default:return 1.6 }
+        switch action { case .shot:return 0.75; case .steal:return 0.45; case .block:return 0.9; case .dunk:return 1.1; case .catchBall:return 0.25; default:return 1.6 }
     }
     var poseAction:String {
         switch action { case .idle:return air == nil ? "" : "jump"; case .shot:return air == nil ? "shot" : "jumpShot"; case .steal:return "defense"; case .catchBall:return "charge"; default:return action.rawValue }
@@ -231,9 +231,9 @@ final class GameSession {
     }
     func block(_ previous:LooseBall,_ next:LooseBall,oldHands:[[DefenseHand]],newHands:[[DefenseHand]])->Bool {
         guard let shooter else { return false };let id=1-shooter,p=players[id]
-        guard p.action == .block,p.air != nil,p.jumpHeight>5,!p.contactUsed,
+        guard p.action == .block,p.air != nil,p.jumpHeight>2,!p.contactUsed,
               DefensePhysics.inFront(ball:next.ground,defender:p.position,facing:p.facing.vector),
-              DefensePhysics.contact(from:previous,to:next,hands:newHands[id],previousHands:oldHands[id]) != nil else { return false }
+              DefensePhysics.contact(from:previous,to:next,hands:newHands[id],previousHands:oldHands[id],radius:DefensePhysics.blockRadius) != nil else { return false }
         body=DefensePhysics.deflected(next,defender:p.position,facing:p.facing.vector);flight=nil;canScore=false;pendingShot=false;lastTouch=id
         players[id].contactUsed=true;players[id].blocks += 1;players[id].cooldown=max(0.7,p.cooldown);emit("블로킹",player:id);return true
     }
@@ -288,9 +288,9 @@ final class GameSession {
             let target=ActionSystem.held(players[owner]),f=CGFloat(1-exp(-dt/0.04))
             body.ground.x += (target.ground.x-body.ground.x)*f;body.ground.y += (target.ground.y-body.ground.y)*f;body.height += (target.height-body.height)*f
             let defender=1-owner,p=players[defender]
-            if p.action == .steal,p.elapsed>=0.10,p.elapsed<=0.27,!p.contactUsed,
+            if p.action == .steal,p.elapsed>=DefensePhysics.stealStart,p.elapsed<=DefensePhysics.stealEnd,!p.contactUsed,
                DefensePhysics.inFront(ball:body.ground,defender:p.position,facing:p.facing.vector),
-               DefensePhysics.contact(from:oldBody,to:body,hands:newHands[defender],previousHands:oldHands[defender]) != nil {
+               DefensePhysics.contact(from:oldBody,to:body,hands:newHands[defender],previousHands:oldHands[defender],radius:DefensePhysics.stealRadius) != nil {
                 players[defender].contactUsed=true;players[defender].steals += 1;grant(defender,rebound:false);players[defender].action = .catchBall;emit("스틸",player:defender)
             } else if p.action == .block { /* Owned balls are never blocked. */ }
             if self.owner==owner && players[owner].action == .dunk && players[owner].elapsed>=0.605 { launch(owner,marker:0.5,dunk:true) }

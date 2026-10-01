@@ -2,6 +2,22 @@ import Foundation
 import AppKit
 
 func runMatchTests() {
+    precondition(abs(JumpMotion.height(progress:0.5)-58.5)<0.001,"Jump peak must be 30 percent higher")
+    precondition(JumpMotion.height(progress:0)==0 && JumpMotion.height(progress:1)==0,"Jump must end on the floor")
+    for (distance,width) in [(750.0,0.03),(1000.0,0.015),(1300.0,0.015)] {
+        precondition(abs(ShotGauge.width(distance:CGFloat(distance))-width)<0.00001,"Long-range gauge balance")
+        precondition(!ShotGauge.isGreen(marker:0.5+width/2+0.000001,width:width),"Long-range outside green must still miss")
+    }
+    let balanceHand=DefenseHand(ground:CGPoint(x:1000,y:530),height:200)
+    var jumper=PlayerState(id:0,position:.zero,facing:.right);jumper.air=0.45
+    precondition(jumper.airDuration==0.9 && abs(jumper.jumpHeight-58.5)<0.001,"Higher jump must preserve duration")
+    for (gap,radius) in [(22.0,DefensePhysics.stealRadius),(29.0,DefensePhysics.blockRadius)] {
+        let ball=LooseBall(ground:CGPoint(x:1000+gap,y:530),velocity:.zero,height:200)
+        precondition(DefensePhysics.contact(from:ball,to:ball,hands:[balanceHand])==nil,"Balance sample should be outside old reach")
+        precondition(DefensePhysics.contact(from:ball,to:ball,hands:[balanceHand],radius:radius)==0,"New defense reach should accept near-hand contact")
+        var far=ball;far.ground.x=1040
+        precondition(DefensePhysics.contact(from:far,to:far,hands:[balanceHand],radius:radius)==nil,"Defense must not steal/block from far away")
+    }
     let g=GameSession();g.begin()
     for _ in 0..<181 { g.step() }
     precondition(g.phase == .playing && g.owner==0 && g.remaining>179.9,"Countdown/first possession")
@@ -73,6 +89,15 @@ func runMatchTests() {
     for _ in 0..<10 { precondition(input.frame(matchID:"test",tick:35).actions.count==2,"Lost release cannot disappear before ACK") }
     input.acknowledge(seq:10,action:2);precondition(input.pending.isEmpty)
     for defender in 0..<2 {
+        for time in [0.08,0.30,0.34] {
+            let steal=GameSession(),attacker=1-defender,sign:CGFloat=defender==0 ? 1 : -1
+            steal.phase = .playing;steal.players[attacker].position=CGPoint(x:1000,y:600);steal.players[attacker].facing=sign>0 ? .left : .right;steal.grant(attacker)
+            steal.players[attacker].dribble=0.12;steal.body=ActionSystem.held(steal.players[attacker])
+            steal.players[defender].position=CGPoint(x:steal.body.ground.x-sign*72,y:600);steal.players[defender].facing=sign>0 ? .right : .left
+            steal.players[defender].action = .steal;steal.players[defender].elapsed=time;steal.players[defender].reach=1
+            steal.players[defender].pose=CharacterPose.target(action:"defense",progress:0.5,airProgress:nil,walking:false,clock:0)
+            steal.step();precondition(steal.owner==defender,"Extended early/late steal window must work for either player")
+        }
         let m=GameSession(),attacker=1-defender,sign:CGFloat=defender==0 ? 1 : -1
         m.phase = .playing;m.players[attacker].position=CGPoint(x:1000,y:600);m.players[attacker].facing=sign>0 ? .left : .right;m.grant(attacker)
         m.players[attacker].dribble=0.12;m.body=ActionSystem.held(m.players[attacker])
@@ -98,6 +123,27 @@ func runMatchTests() {
     buzzer.players[0].action = .charge;buzzer.players[0].pose=CharacterPose.target(action:"charge",progress:1,airProgress:nil,walking:false,clock:0);buzzer.body=ActionSystem.held(buzzer.players[0]);buzzer.launch(0,marker:0.5,dunk:false)
     buzzer.step();precondition(buzzer.phase == .endingShot,"Shot before buzzer must stay live")
     for _ in 0..<160 { buzzer.step() };precondition(buzzer.phase == .finished && buzzer.players[0].score==2,"Buzzer shot must decide result")
+    for attacker in 0..<2 {
+        var successes=0
+        for preparation in [6,10,14,18] {
+            let m=GameSession(),defender=1-attacker,sign:CGFloat=attacker==0 ? 1 : -1
+            m.phase = .playing;m.players[attacker].position=CGPoint(x:attacker==0 ? 1300 : 330,y:530)
+            m.players[attacker].facing=sign>0 ? .right : .left;m.grant(attacker)
+            m.players[attacker].action = .charge
+            m.players[attacker].pose=CharacterPose.target(action:"charge",progress:1,airProgress:nil,walking:false,clock:0)
+            m.body=ActionSystem.held(m.players[attacker])
+            m.players[defender].position=CGPoint(x:m.players[attacker].position.x+sign*85,y:530)
+            m.players[defender].facing=sign>0 ? .left : .right
+            m.players[defender].input=InputFrame(matchID:m.matchID,seq:1,tick:0,x:0,y:0,buttons:InputFrame.defend,actions:[])
+            m.execute(ActionCommand(id:1,tick:0,action:.jump),player:defender)
+            for _ in 0..<preparation { m.step() }
+            m.launch(attacker,marker:0.5,dunk:false)
+            for _ in 0..<65 { m.step() }
+            if m.players[defender].blocks>0 { successes += 1 }
+            precondition(m.players[defender].blocks<=1,"One jump cannot block repeatedly")
+        }
+        precondition(successes>=2,"A normal close-range LAN shot needs several usable block timings, attacker \(attacker), successes \(successes)")
+    }
     print("PASS: common match rules, both scorers, strict green, charge-jump, fourteen-second possession, pause, overtime, out-of-bounds, stale input, action deduplication and datagram bounds")
 }
 

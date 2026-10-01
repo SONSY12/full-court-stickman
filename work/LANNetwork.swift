@@ -3,7 +3,7 @@ import Network
 import Darwin
 
 enum LANProtocol {
-    static let version=1,rules=1
+    static let version=1,rules=2
     static let content="stickman-lan-1"
     static let service="_fullcourt._tcp"
     static let maxControl=8192,maxDatagram=1400

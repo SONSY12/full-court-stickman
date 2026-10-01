@@ -188,7 +188,7 @@ final class CourtView: NSView {
     func begin(_ name: String) {
         action=name; elapsed=0; actionDurationOverride=nil; releaseTimeOverride=nil
         if ["jumpShot","block"].contains(name), let air=airborne {
-            actionDurationOverride=0.75
+            actionDurationOverride=name == "block" ? 0.9 : 0.75
             releaseTimeOverride=max(0.015,min(0.30,(airDuration*0.8-air)*0.45))
         }
     }
@@ -221,7 +221,7 @@ final class CourtView: NSView {
     func jumpHeight() -> CGFloat {
         guard let air=airborne else { return 0 }
         let t=air/airDuration
-        return CGFloat(t > 0.2 && t < 0.8 ? 150*sin(.pi*(t-0.2)/0.6) : 0)*0.30
+        return JumpMotion.height(progress:t)
     }
     func groundedFeet()->[CGPoint] {
         [8,10].map {
@@ -379,10 +379,10 @@ final class CourtView: NSView {
     }
     @discardableResult func trySteal(previous:LooseBall,previousHands:[DefenseHand])->Bool {
         guard defensePractice && opponent.ownsBall && !ownsBall && action == "defense" &&
-              !defenseContactUsed && elapsed>=0.10 && elapsed<duration(action)*0.85 else { return false }
+              !defenseContactUsed && elapsed>=DefensePhysics.stealStart && elapsed<duration(action)*0.85 else { return false }
         let body=opponentBall()
         guard DefensePhysics.inFront(ball:body.ground,defender:player,facing:facing.vector),
-              DefensePhysics.contact(from:previous,to:body,hands:defenseHands(),previousHands:previousHands) != nil else { return false }
+              DefensePhysics.contact(from:previous,to:body,hands:defenseHands(),previousHands:previousHands,radius:DefensePhysics.stealRadius) != nil else { return false }
         opponent.ownsBall=false; opponent.phase="waiting"; opponent.elapsed=0; opponent.pickupDelay=0.8
         ownsBall=true; carriedBall=body.screen; flight=nil; rebound=nil
         shotCanScore=false; shotByOpponent=false; shotBlocked=false
@@ -393,10 +393,10 @@ final class CourtView: NSView {
         return true
     }
     @discardableResult func tryBlock(from previous:LooseBall,to body:LooseBall,hands:[DefenseHand],previousHands:[DefenseHand])->Bool {
-        guard !ownsBall && action == "block" && airborne != nil && jumpHeight()>5 &&
+        guard !ownsBall && action == "block" && airborne != nil && jumpHeight()>2 &&
               !defenseContactUsed && defensePractice && shotByOpponent else { return false }
         guard DefensePhysics.inFront(ball:body.ground,defender:player,facing:facing.vector),
-              DefensePhysics.contact(from:previous,to:body,hands:hands,previousHands:previousHands) != nil else { return false }
+              DefensePhysics.contact(from:previous,to:body,hands:hands,previousHands:previousHands,radius:DefensePhysics.blockRadius) != nil else { return false }
         let deflected=DefensePhysics.deflected(body,defender:player,facing:facing.vector)
         flight=nil; rebound=deflected; ball=deflected.screen
         shotCanScore=false; shotBlocked=true; defenseContactUsed=true
@@ -787,7 +787,7 @@ enum Main {
             precondition(abs(ShotGauge.width(distance:200)-0.32)<0.0001)
             precondition(abs(ShotGauge.width(distance:450)-0.16)<0.0001)
             precondition(abs(ShotGauge.width(distance:650)-0.06)<0.0001)
-            for width in [0.32,0.16,0.06] {
+            for width in [0.32,0.16,0.06,0.03,0.015,0.008] {
                 for sign in [-1.0,1.0] {
                     precondition(ShotGauge.isGreen(marker:0.5+sign*width/2,width:width),"Green edge must match the visible window")
                     precondition(!ShotGauge.isGreen(marker:0.5+sign*(width/2+0.000001),width:width),"Outside green must fail without extra tolerance")
@@ -803,7 +803,7 @@ enum Main {
             view.reset(); view.ownsBall=true; view.startCharge(); view.cancelCharge()
             precondition(!view.charging && view.ownsBall && view.flight == nil,"Focus loss must cancel, not shoot")
             view.reset()
-            for distance in stride(from:201,through:700,by:1) {
+            for distance in stride(from:201,through:1600,by:1) {
                 precondition(ShotGauge.width(distance:CGFloat(distance))<=ShotGauge.width(distance:CGFloat(distance-1)),"Green window must only narrow")
             }
             for facing:Facing in [.left,.right] {
@@ -814,7 +814,8 @@ enum Main {
                         view.player=CGPoint(x:hoopX-facing.vector.x*distance,y:530)
                         view.ownsBall=true; view.startCharge()
                         view.tick(dt:green ? 0.55 : 0.1); view.releaseCharge()
-                        precondition(abs(view.gaugeWidth-0.06)<0.0001,"Wrong basket used for long-range gauge")
+                        let aimedDistance=view.aimedHoop()?.distance ?? distance
+                        precondition(abs(view.gaugeWidth-ShotGauge.width(distance:aimedDistance))<0.0001,"Wrong basket used for long-range gauge")
                         precondition(view.flight != nil && view.score==0,"Score must wait for a downward crossing")
                         if green { precondition(abs(view.shotGroundEnd!.x-hoopX)<0.001,"Long shot stops short of hoop") }
                         for _ in 0..<160 { view.tick() }
@@ -850,7 +851,8 @@ enum Main {
                 let sign:CGFloat=index == 0 ? -1 : 1
                 for distance:CGFloat in [170,500,1000] {
                     for angle:CGFloat in [-20,20] {
-                        let a=(distance>700 ? angle/2 : angle) * .pi/180
+                        let limit=CGFloat(acos(ShotAssist.alignment(distance:distance)))
+                        let a=angle/20*limit*0.8
                         let origin=CGPoint(x:hoop.center.x-sign*distance*cos(a),y:hoop.center.y-distance*sin(a))
                         view.reset(); view.keys.removeAll(); view.player=origin
                         view.facing=index == 0 ? .left : .right

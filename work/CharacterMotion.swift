@@ -19,7 +19,7 @@ struct CharacterPose {
         var lift:CGFloat=0
         if ["shot","jumpShot"].contains(action) { lift=smooth(t/0.32)*(1-recovery) }
         if action == "charge" { lift=smooth(t/0.32) }
-        if action == "block" { lift=smooth(t/0.24)*(1-smooth((t-0.68)/0.28)) }
+        if action == "block" { lift=smooth(t/0.16)*(1-smooth((t-0.82)/0.16)) }
         if action == "dunk" { lift=smooth((t-0.12)/0.22)*(1-smooth((t-0.66)/0.25)) }
         let defense=action == "defense" ? smooth(t/0.2)*(1-smooth((t-0.72)/0.22)) : 0
         crouch += 12*defense
@@ -57,7 +57,8 @@ struct CharacterPose {
             let dx=(target.joints[i].x-joints[i].x)*blend
             let dy=(target.joints[i].y-joints[i].y)*blend
             let distance=hypot(dx,dy)
-            let fraction=distance>0 ? min(1,CGFloat(dt*1400)/distance) : 1
+            // Leave room for the higher root jump without a visible hand snap.
+            let fraction=distance>0 ? min(1,CGFloat(dt*1200)/distance) : 1
             joints[i].x += dx*fraction
             joints[i].y += dy*fraction
         }

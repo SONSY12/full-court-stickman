@@ -4,7 +4,10 @@ enum ShotGauge {
     static func width(distance:CGFloat)->Double {
         if distance<=200 { return 0.32 }
         if distance<=450 { return 0.32-Double((distance-200)/250)*0.16 }
-        return max(0.06,0.16-Double((distance-450)/200)*0.10)
+        if distance<=650 { return 0.16-Double((distance-450)/200)*0.10 }
+        if distance<=750 { return 0.06-Double((distance-650)/100)*0.03 }
+        if distance<=1000 { return 0.03-Double((distance-750)/250)*0.015 }
+        return 0.015 // Do not shrink below one 60Hz timing step.
     }
     static func marker(time:Double)->Double {
         let phase=time.truncatingRemainder(dividingBy:2.2)/1.1
@@ -12,6 +15,13 @@ enum ShotGauge {
     }
     static func isGreen(marker:Double,width:Double)->Bool {
         marker.isFinite && width.isFinite && width>=0 && width<=1 && marker>=0.5-width/2 && marker<=0.5+width/2
+    }
+}
+
+enum JumpMotion {
+    static let peak:CGFloat=58.5 // 30% higher; the 0.9-second jump is unchanged.
+    static func height(progress t:Double)->CGFloat {
+        CGFloat(t>0.2 && t<0.8 ? Double(peak)*sin(.pi*(t-0.2)/0.6) : 0)
     }
 }
 

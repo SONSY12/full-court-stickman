@@ -9,6 +9,9 @@ struct DefenseHand {
 
 enum DefensePhysics {
     static let contactRadius = Basketball.radius+6
+    static let stealRadius = Basketball.radius+14
+    static let blockRadius = Basketball.radius+20
+    static let stealStart=0.06,stealEnd=0.36
     static let cooldown:Double = 0.7
 
     static func inFront(ball:CGPoint,defender:CGPoint,facing:CGPoint)->Bool {
@@ -18,7 +21,7 @@ enum DefensePhysics {
     }
 
     // Sweep relative motion, so neither a fast shot nor a moving hand tunnels.
-    static func contact(from:LooseBall,to:LooseBall,hands:[DefenseHand],previousHands:[DefenseHand]? = nil)->Int? {
+    static func contact(from:LooseBall,to:LooseBall,hands:[DefenseHand],previousHands:[DefenseHand]? = nil,radius:CGFloat=DefensePhysics.contactRadius)->Int? {
         for i in hands.indices {
             let old=(previousHands?.count == hands.count) ? previousHands![i] : hands[i]
             let a=[from.ground.x-old.ground.x,(from.ground.y-old.ground.y)*Hoop.groundDepthScale,from.height-old.height]
@@ -27,7 +30,7 @@ enum DefensePhysics {
             let length=d.reduce(CGFloat(0)) { $0+$1*$1 }
             let t=length>0 ? max(0,min(1,-zip(a,d).reduce(CGFloat(0)) { $0+$1.0*$1.1 }/length)) : 0
             let distance=zip(a,d).reduce(CGFloat(0)) { $0+pow($1.0+$1.1*t,2) }
-            if distance<=contactRadius*contactRadius { return i }
+            if distance<=radius*radius { return i }
         }
         return nil
     }
