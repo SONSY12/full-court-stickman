@@ -2,6 +2,8 @@ import AppKit
 
 enum AutoUpdater {
     static func check(status: @escaping (String) -> Void) {
+        let installed=Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? ""
+        if installed.contains("-beta") { status("LAN 베타 \(installed) · 실제 두 맥북 검증 필요");return }
         let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first { FileManager.default.isExecutableFile(atPath: $0) }
         guard let brew else { status("자동 업데이트: Homebrew 설치가 필요합니다"); return }
         let url=URL(string:"https://api.github.com/repos/SONSY12/full-court-stickman/releases/latest")!

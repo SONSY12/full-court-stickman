@@ -1,58 +1,10 @@
 import AppKit
 
-enum ShotGauge {
-    static func width(distance:CGFloat)->Double {
-        if distance<=200 { return 0.32 }
-        if distance<=450 { return 0.32-Double((distance-200)/250)*0.16 }
-        return max(0.06,0.16-Double((distance-450)/200)*0.10)
-    }
-    static func marker(time:Double)->Double {
-        let phase=time.truncatingRemainder(dividingBy:2.2)/1.1
-        return phase<=1 ? phase : 2-phase
-    }
-    static func isGreen(marker:Double,width:Double)->Bool {
-        marker.isFinite && width.isFinite && width>=0 && width<=1 &&
-        marker>=0.5-width/2 && marker<=0.5+width/2
-    }
-}
-
 struct Clip {
     var frames: [NSImage]
     var width: CGFloat
     var height: CGFloat
     var foot: CGFloat
-}
-
-enum Facing: CaseIterable {
-    case up, upRight, right, downRight, down, downLeft, left, upLeft
-    static func from(dx: CGFloat, dy: CGFloat) -> Facing {
-        if dy < 0 { return dx < 0 ? .upLeft : dx > 0 ? .upRight : .up }
-        if dy > 0 { return dx < 0 ? .downLeft : dx > 0 ? .downRight : .down }
-        return dx < 0 ? .left : .right
-    }
-    var head: String {
-        switch self {
-        case .up, .upLeft, .upRight: return "back"
-        case .left, .downLeft: return "left"
-        case .right, .downRight: return "right"
-        case .down: return "front"
-        }
-    }
-    var bodyWidth: CGFloat { self == .left || self == .right ? 0.65 : self == .down ? 1 : 0.85 }
-    var handSide: CGFloat { self == .left || self == .downLeft || self == .upLeft ? -1 : 1 }
-    var vector: CGPoint {
-        let d:CGFloat=1/sqrt(2)
-        switch self {
-        case .up: return CGPoint(x:0,y:-1)
-        case .upRight: return CGPoint(x:d,y:-d)
-        case .right: return CGPoint(x:1,y:0)
-        case .downRight: return CGPoint(x:d,y:d)
-        case .down: return CGPoint(x:0,y:1)
-        case .downLeft: return CGPoint(x:-d,y:d)
-        case .left: return CGPoint(x:-1,y:0)
-        case .upLeft: return CGPoint(x:-d,y:-d)
-        }
-    }
 }
 
 struct DefenseOpponent {
@@ -75,7 +27,7 @@ final class CourtView: NSView {
     var facing: Facing = .down
     var keys = Set<UInt16>()
     var running = false
-    var movementSpeed: CGFloat { action == "defense" ? 2.3 : running ? 5.6 : 3.5 }
+    var movementSpeed: CGFloat { action == "defense" ? 2.3 : charging ? 1.75 : running ? 5.6 : 3.5 }
     var player = CGPoint(x: 550, y: 530)
     var ball = CGPoint(x: 836, y: 570)
     var ownsBall = false
@@ -119,6 +71,7 @@ final class CourtView: NSView {
     var shotGroundEnd: CGPoint? = nil
     var shotDirection: CGPoint = .zero
     var timer: Timer?
+    var exitToMenu:(()->Void)?
     var message = "가운데 공에 가까이 가면 집습니다"
     var updateStatus = "업데이트 확인 중…"
     let world = CGSize(width: 1672, height: 1040)
@@ -161,6 +114,7 @@ final class CourtView: NSView {
         keys.insert(event.keyCode)
         if event.isARepeat { return }
         switch event.keyCode {
+        case 53: clearInput();exitToMenu?()
         case 49: startJump()
         case 7:
             if ownsBall && (action.isEmpty || action == "jump") {
@@ -182,8 +136,9 @@ final class CourtView: NSView {
         if event.keyCode == 7 && charging { releaseCharge() }
     }
     func startJump() {
-        guard airborne == nil && (action.isEmpty || action == "defense") else { return }
+        guard airborne == nil && (action.isEmpty || action == "defense" || charging) else { return }
         takeoffFeet=groundedFeet(); airborne=0; airDuration=jumpDuration
+        if charging { message="점프슛 준비 · X를 놓으면 현재 높이에서 발사합니다";return }
         if keys.contains(8) && !ownsBall {
             begin("block"); defenseContactUsed=false
             defenseCooldown=max(defenseCooldown,DefensePhysics.cooldown)
@@ -589,12 +544,16 @@ final class CourtView: NSView {
         return CGPoint(x:player.x+31*facing.bodyWidth*facing.handSide,y:player.y-Basketball.radius-bounce-jumpHeight())
     }
     func drawCharacter(at position:CGPoint,facing direction:Facing,pose body:CharacterPose,jump:CGFloat,color:NSColor,defending:CGFloat = 0,label:String? = nil) {
-        NSColor.black.withAlphaComponent(0.2).setFill()
-        NSBezierPath(ovalIn:NSRect(x:position.x-27,y:position.y-8,width:54,height:16)).fill()
+        let shadowScale=max(0.7,1-jump/180)
+        NSColor.black.withAlphaComponent(max(0.08,0.2-Double(jump)/400)).setFill()
+        NSBezierPath(ovalIn:NSRect(x:position.x-27*shadowScale,y:position.y-8*shadowScale,width:54*shadowScale,height:16*shadowScale)).fill()
         if let label {
             color.setStroke()
             let ring=NSBezierPath(ovalIn:NSRect(x:position.x-30,y:position.y-10,width:60,height:20)); ring.lineWidth=2; ring.stroke()
-            label.draw(at:CGPoint(x:position.x-30,y:position.y+15),withAttributes:[.font:NSFont.systemFont(ofSize:16,weight:.bold),.foregroundColor:color])
+            let attrs:[NSAttributedString.Key:Any]=[.font:NSFont.systemFont(ofSize:16,weight:.bold),.foregroundColor:NSColor.white]
+            let size=label.size(withAttributes:attrs)
+            NSColor.black.withAlphaComponent(0.6).setFill();NSBezierPath(roundedRect:NSRect(x:position.x-size.width/2-5,y:position.y+12,width:size.width+10,height:size.height+5),xRadius:4,yRadius:4).fill()
+            label.draw(at:CGPoint(x:position.x-size.width/2,y:position.y+15),withAttributes:attrs)
         }
         color.setStroke()
         for chain in [[0,2],[1,3,4],[1,5,6],[2,7,8],[2,9,10]] {
@@ -700,13 +659,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle:"Full Court Stickman 종료",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q")
         item.submenu=appMenu; menu.addItem(item); NSApp.mainMenu=menu
         window=NSWindow(contentRect:NSRect(x:0,y:0,width:1200,height:747),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
-        window.title="Full Court Stickman"
+        window.title="Full Court Stickman — LAN Beta"
         window.minSize=NSSize(width:840,height:550)
-        let view=CourtView(frame:window.contentView!.bounds)
+        let view=GameRootView(frame:window.contentView!.bounds)
         view.autoresizingMask=[.width,.height]; window.contentView=view
         window.center(); window.makeKeyAndOrderFront(nil); window.makeFirstResponder(view)
         NSApp.activate(ignoringOtherApps:true)
-        AutoUpdater.check { [weak view] status in view?.updateStatus=status; view?.needsDisplay=true }
+        AutoUpdater.check { [weak view] status in view?.updateStatus=status;if view?.screen == .home && view?.practice == nil { view?.showHome() } }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
@@ -784,6 +743,20 @@ func runDefenseGameplayTests(_ view:CourtView) {
 enum Main {
     static func main() {
         let app=NSApplication.shared
+        if CommandLine.arguments.contains("--lan-self-test") { runLANTransportTests();return }
+        if let flag=CommandLine.arguments.firstIndex(of:"--render-lan-preview"),flag+1<CommandLine.arguments.count {
+            let network=NetworkSession();network.role = .host;network.game.phase = .playing;network.game.arrange(0)
+            network.game.players[0].position=CGPoint(x:1250,y:530);network.game.players[0].action = .charge;network.game.players[0].elapsed=0.55;network.game.players[0].chargeTime=0.55
+            network.game.players[1].position=CGPoint(x:1390,y:530);network.game.players[1].action = .block;network.game.players[1].air=0.45;network.game.players[1].elapsed=0.30
+            network.names=["방장","참가자"];network.game.remaining=153;network.rttMS=12
+            for i in 0..<2 { let p=network.game.players[i];network.game.players[i].pose=CharacterPose.target(action:p.poseAction,progress:p.elapsed/p.actionDuration,airProgress:p.air.map{$0/p.airDuration},walking:false,clock:0) }
+            network.game.body=ActionSystem.held(network.game.players[0])
+            let small=CommandLine.arguments.contains("--small"),size=NSSize(width:small ? 840 : 1200,height:small ? 550 : 747)
+            let view=LANMatchView(frame:NSRect(origin:.zero,size:size),network:network);view.timer?.invalidate();view.shown=network.game.snapshot();view.poses=network.game.players.map(\.pose)
+            for _ in 0..<120 { view.camera.update(snapshot:view.shown!,local:0,size:CGSize(width:size.width,height:size.height-104),dt:1.0/60) }
+            let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds)!;view.cacheDisplay(in:view.bounds,to:bitmap)
+            try! bitmap.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:CommandLine.arguments[flag+1]));network.stop();return
+        }
         if let flag=CommandLine.arguments.firstIndex(where:{ ["--render-preview","--render-defense-preview"].contains($0) }),flag+1<CommandLine.arguments.count {
             let view=CourtView(frame:NSRect(x:0,y:0,width:1672,height:1040)); view.timer?.invalidate()
             view.player=CGPoint(x:980,y:530); view.facing = .right; view.ownsBall=true
@@ -810,7 +783,7 @@ enum Main {
         if CommandLine.arguments.contains("--self-test") {
             let view=CourtView(frame:NSRect(x:0,y:0,width:1200,height:747))
             view.timer?.invalidate()
-            runShotPhysicsTests(); runCourtGeometryTests(); runDefensePhysicsTests()
+            runShotPhysicsTests(); runCourtGeometryTests(); runDefensePhysicsTests();runMatchTests();runLANViewTests()
             precondition(abs(ShotGauge.width(distance:200)-0.32)<0.0001)
             precondition(abs(ShotGauge.width(distance:450)-0.16)<0.0001)
             precondition(abs(ShotGauge.width(distance:650)-0.06)<0.0001)

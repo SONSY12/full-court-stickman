@@ -50,6 +50,7 @@ struct LooseBall {
     var rimHits = 0
     var boardHits = 0
     var scoredHoop:Int?
+    var crossedBoundary=false
     var settled: Bool { height==0 && verticalVelocity==0 && hypot(velocity.x,velocity.y)<8 }
     var screen: CGPoint { CGPoint(x:ground.x,y:ground.y-Basketball.radius-height) }
 
@@ -70,6 +71,7 @@ struct LooseBall {
     }
 
     mutating func step(dt: Double) {
+        crossedBoundary=false
         // Adaptive substeps prevent a fast ball passing through the thin rim or board.
         let speed=sqrt(velocity.x*velocity.x+velocity.y*velocity.y+verticalVelocity*verticalVelocity)
         let count=max(1,Int(ceil(max(dt*240,dt*Double(speed)/3))))
@@ -90,10 +92,12 @@ struct LooseBall {
                     if verticalVelocity<65 { verticalVelocity=0 }
                 }
             }
+            if ground.y<CourtBounds.top || ground.y>CourtBounds.bottom { crossedBoundary=true }
             if ground.y<CourtBounds.top { ground.y=CourtBounds.top; velocity.y=abs(velocity.y)*0.6 }
             if ground.y>CourtBounds.bottom { ground.y=CourtBounds.bottom; velocity.y = -abs(velocity.y)*0.6 }
             // Elevated balls can reach baskets that overhang the court boundary.
             let inset:CGFloat=height>145 ? 45 : CourtBounds.inset(at:ground.y)
+            if height<=145 && !CourtBounds.contains(ground) { crossedBoundary=true }
             if ground.x<inset { ground.x=inset; velocity.x=abs(velocity.x)*0.6 }
             if ground.x>1672-inset { ground.x=1672-inset; velocity.x = -abs(velocity.x)*0.6 }
             let friction=exp(-(height==0 ? 4.0 : 0.7)*delta)

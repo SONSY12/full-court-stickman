@@ -3,8 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 APP="build/Full Court Stickman.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" dist
-swiftc work/CourtDemo.swift work/AutoUpdater.swift work/CharacterMotion.swift work/BallPhysics.swift work/ShotPhysics.swift work/CourtGeometry.swift work/DefensePhysics.swift -o build/FullCourt-arm64 -target arm64-apple-macos13.0 -module-cache-path /private/tmp/fullcourt-swift-cache
-swiftc work/CourtDemo.swift work/AutoUpdater.swift work/CharacterMotion.swift work/BallPhysics.swift work/ShotPhysics.swift work/CourtGeometry.swift work/DefensePhysics.swift -o build/FullCourt-x86_64 -target x86_64-apple-macos13.0 -module-cache-path /private/tmp/fullcourt-swift-cache
+SOURCES=(work/CourtDemo.swift work/AutoUpdater.swift work/CharacterMotion.swift work/BallPhysics.swift work/ShotPhysics.swift work/CourtGeometry.swift work/DefensePhysics.swift work/GameTypes.swift work/GameSession.swift work/LANNetwork.swift work/LANViews.swift work/LANTests.swift)
+swiftc "${SOURCES[@]}" -o build/FullCourt-arm64 -target arm64-apple-macos13.0 -module-cache-path /private/tmp/fullcourt-swift-cache
+swiftc "${SOURCES[@]}" -o build/FullCourt-x86_64 -target x86_64-apple-macos13.0 -module-cache-path /private/tmp/fullcourt-swift-cache
 lipo -create build/FullCourt-arm64 build/FullCourt-x86_64 -output "$APP/Contents/MacOS/FullCourt"
 cp work/Info.plist "$APP/Contents/Info.plist"
 cp outputs/basketball-court-v1.png "$APP/Contents/Resources/"

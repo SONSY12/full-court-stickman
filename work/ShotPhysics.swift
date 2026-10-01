@@ -3,12 +3,13 @@ import Foundation
 enum ShotAssist {
     // Half a keyboard direction step: forgiving aim, never a backward shot.
     static let minimumAlignment = cos(Double.pi/8)
-    static func target(from origin:CGPoint,facing:CGPoint)->(index:Int,distance:CGFloat,end:CGPoint)? {
+    static func target(from origin:CGPoint,facing:CGPoint,hoopIndex:Int? = nil)->(index:Int,distance:CGFloat,end:CGPoint)? {
         let length=CGFloat(hypot(Double(facing.x),Double(facing.y)))
         guard length.isFinite && length>0 && origin.x.isFinite && origin.y.isFinite else { return nil }
         var best:(index:Int,distance:CGFloat,end:CGPoint)?
         var bestAlignment = -Double.infinity
         for (index,hoop) in Hoop.all.enumerated() {
+            if let hoopIndex, index != hoopIndex { continue }
             let dx=hoop.center.x-origin.x, dy=hoop.center.y-origin.y
             let distance=CGFloat(hypot(Double(dx),Double(dy)))
             guard distance>0.001 else { continue }
