@@ -116,7 +116,10 @@ func runLANViewTests() {
     view.keyDown(with:key(8));view.keyDown(with:key(49));view.keyDown(with:key(123))
     precondition(root.network.input.pending.suffix(2).map(\.action)==[.defend,.jump] && root.network.input.x == -1,"C/Space/arrow combination")
     _ = view.resignFirstResponder();precondition(root.network.input.buttons==0 && root.network.input.x==0,"Focus loss must clear held controls")
-    root.screen = .match;root.lostFocus();precondition(root.network.game.phase == .paused,"Focus loss requests whole-match pause")
+    for phase:MatchPhase in [.countdown,.playing,.restart,.endingShot] {
+        root.screen = .match;root.network.game.phase=phase;root.lostFocus()
+        precondition(root.network.game.phase == .paused,"Focus loss must pause every active match phase")
+    }
     root.showHome();precondition(root.screen == .home && root.network.role == .idle,"Leave/menu must not recurse")
     print("PASS: keyboard menus, Hangul physical key mapping, input combinations, focus clearing and pause/menu lifecycle")
 }

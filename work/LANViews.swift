@@ -143,7 +143,9 @@ final class GameRootView:NSView,NSTextFieldDelegate {
     }
     required init?(coder:NSCoder) { fatalError() }
     deinit { NotificationCenter.default.removeObserver(self) }
-    @objc func lostFocus() { if screen == .match,network.latest?.phase == .playing { network.pause() } }
+    @objc func lostFocus() {
+        if screen == .match,let phase=network.latest?.phase,[.countdown,.playing,.restart,.endingShot].contains(phase) { network.pause() }
+    }
     override func draw(_ dirtyRect:NSRect) { NSColor(calibratedRed:0.06,green:0.08,blue:0.12,alpha:1).setFill();bounds.fill() }
     func clearMenu() { stack?.removeFromSuperview();stack=nil;buttons.removeAll();handlers.removeAll();selection=0;fieldAlias=nil;fieldAddress=nil;fieldRoom=nil }
     func menu(_ title:String,_ subtitle:String,overlay:Bool=false) {
